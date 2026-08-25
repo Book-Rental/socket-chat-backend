@@ -21,7 +21,7 @@ app.use(
     })
 );
 app.use(express.json());
-const PORT = 5000;
+const PORT = process.env.PORT || 5000;
 app.get("/", (req, res) => {
     res.json({
         message: "Socket.IO server is running"
