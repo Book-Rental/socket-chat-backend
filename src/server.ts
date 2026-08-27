@@ -6,6 +6,7 @@ import cors from "cors";
 const app = express();
 
 const server = http.createServer(app);
+const onlineUsers = new Map<string, string>();
 
 const io = new Server(server, {
     cors: {
@@ -34,7 +35,29 @@ app.get("/", (req: Request, res: Response) => {
 // Socket.IO connection
 io.on("connection", (socket: Socket) => {
     console.log(`User connected: ${socket.id}`);
+    socket.on("registerUser", (userId: string) => {
+        onlineUsers.set(userId, socket.id);
+        console.log(`Registered ${userId} -> ${socket.id}`);
+    });
 
+    socket.on(
+        "privateMessage",
+        ({ toUserId, fromUserId, message }: { toUserId: string; fromUserId: string; message: string }) => {
+            const targetSocketId = onlineUsers.get(toUserId);
+
+            if (targetSocketId) {
+                // send ONLY to that one socket
+                io.to(targetSocketId).emit("receivePrivateMessage", {
+                    fromUserId,
+                    message,
+                    timestamp: new Date(),
+                });
+            } else {
+                // optional: tell sender the user is offline
+                socket.emit("privateMessageError", { toUserId, reason: "User offline" });
+            }
+        }
+    );
     // Send message to everyone
     socket.on("sendMessage", (message: string) => {
         console.log(`Message from ${socket.id}:`, message);
@@ -45,7 +68,7 @@ io.on("connection", (socket: Socket) => {
             timestamp: new Date(),
         };
 
-        io.emit("receiveMessage", messageData);
+        socket.broadcast.emit("receiveMessage", messageData);
     });
 
     // Join room
@@ -83,6 +106,9 @@ io.on("connection", (socket: Socket) => {
 
     // Disconnect
     socket.on("disconnect", () => {
+        for (const [userId, sId] of onlineUsers) {
+            if (sId === socket.id) onlineUsers.delete(userId);
+        }
         console.log(`User disconnected: ${socket.id}`);
     });
 });
