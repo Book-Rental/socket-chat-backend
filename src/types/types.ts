@@ -2,9 +2,11 @@ export interface MessagePayload {
     id: string;
     from: string;
     to?: string;
+    recipients?: string[];
     roomId?: string;
     content: string;
     timestamp: number;
+    type: "private" | "group" | "broadcast" | "room";
 }
 
 export interface ClientToServerEvents {
