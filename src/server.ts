@@ -1,3 +1,7 @@
+import dotenv from "dotenv";
+
+dotenv.config();
+
 import express from "express";
 import http from "http";
 import cors from "cors";
@@ -9,10 +13,21 @@ import {
     InterServerEvents,
     SocketData
 } from "./types/types";
-import { registerOneToOneHandlers } from "./components/oneToOneHandler";
-import { registerBroadcastHandlers } from "./components/broadcastHandler";
-import { registerRoomHandlers } from "./components/roomHandler";
-import { registerGroupHandlers } from "./components/groupHandler";
+
+import { registerOneToOneHandlers }
+    from "./components/oneToOneHandler";
+
+import { registerBroadcastHandlers }
+    from "./components/broadcastHandler";
+
+import { registerRoomHandlers }
+    from "./components/roomHandler";
+
+import { registerGroupHandlers }
+    from "./components/groupHandler";
+
+import { connectDatabase }
+    from "./config/database";
 
 
 const app = express();
@@ -112,6 +127,11 @@ io.on(
             io,
             socket
         );
+
+
+        /*
+         * Group
+         */
         registerGroupHandlers(
             io,
             socket
@@ -126,12 +146,23 @@ const PORT =
     ) || 5000;
 
 
-server.listen(
-    PORT,
-    () => {
+/*
+ * Start server
+ */
+const startServer = async (): Promise<void> => {
 
-        console.log(
-            `Server running on port ${PORT}`
-        );
-    }
-);
+    await connectDatabase();
+
+    server.listen(
+        PORT,
+        () => {
+
+            console.log(
+                `Server running on port ${PORT}`
+            );
+        }
+    );
+};
+
+
+startServer();

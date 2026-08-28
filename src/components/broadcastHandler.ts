@@ -8,7 +8,7 @@ import {
     SocketData,
     MessagePayload,
 } from "../types/types";
-
+import { Message } from "../models/Message";
 
 type IOServer = Server<
     ClientToServerEvents,
@@ -24,100 +24,60 @@ type IOSocket = Socket<
     SocketData
 >;
 
-
 export function registerBroadcastHandlers(
     io: IOServer,
     socket: IOSocket
 ): void {
+    socket.on("broadcastMessage", async (content) => {
+        const from = socket.data.userId;
 
-    socket.on(
-        "broadcastMessage",
-        (content) => {
+        if (!from) {
+            socket.emit("errorMessage", "User is not registered");
+            return;
+        }
 
-            /*
-             * Get registered user
-             */
-            const from = socket.data.userId;
+        const trimmedContent = content?.trim();
 
-            console.log(
-                "BROADCAST REQUEST:",
-                {
-                    from,
-                    content,
-                    socketId: socket.id,
-                }
-            );
+        if (!trimmedContent) {
+            socket.emit("errorMessage", "Message cannot be empty");
+            return;
+        }
 
+        const payload: MessagePayload = {
+            id: randomUUID(),
+            from,
+            content: trimmedContent,
+            timestamp: Date.now(),
+            type: "broadcast",
+        };
 
-            /*
-             * Check user registration
-             */
-            if (!from) {
+        try {
+            await Message.create({
+                from: payload.from,
+                content: payload.content,
+                timestamp: payload.timestamp,
+                type: "broadcast",
+            });
 
-                socket.emit(
-                    "errorMessage",
-                    "User is not registered"
-                );
+            console.log("BROADCAST MESSAGE SAVED:", payload);
 
-                return;
-            }
-
-
-            /*
-             * Validate message
-             */
-            const trimmedContent =
-                content.trim();
-
-            if (!trimmedContent) {
-
-                socket.emit(
-                    "errorMessage",
-                    "Message cannot be empty"
-                );
-
-                return;
-            }
-
-
-            /*
-             * Create broadcast message
-             */
-            const payload: MessagePayload = {
-
-                id: randomUUID(),
-
-                from,
-
-                content: trimmedContent,
-
-                timestamp: Date.now(),
-            };
-
-
-            console.log(
-                "BROADCASTING TO OTHER USERS:",
-                payload
-            );
-
-
-            /*
-             * Send to EVERYONE EXCEPT sender
-             */
+            // Send to everyone except sender
             socket.broadcast.emit(
                 "receiveBroadcastMessage",
                 payload
             );
 
+            console.log("BROADCAST MESSAGE SENT:", payload);
+        } catch (error) {
+            console.error(
+                "FAILED TO SAVE BROADCAST MESSAGE:",
+                error
+            );
 
-            /*
-             * Send the message back only to sender
-             *
-             * This allows the sender to use the
-             * same server-generated payload.
-             */
-
-
+            socket.emit(
+                "errorMessage",
+                "Failed to send broadcast message"
+            );
         }
-    );
+    });
 }
