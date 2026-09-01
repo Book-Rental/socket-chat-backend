@@ -1,15 +1,8 @@
 import { Server, Socket } from "socket.io";
 import { randomUUID } from "crypto";
-
-import {
-    ClientToServerEvents,
-    ServerToClientEvents,
-    InterServerEvents,
-    SocketData,
-    MessagePayload,
-} from "../types/types";
-
+import { ClientToServerEvents, ServerToClientEvents, InterServerEvents, SocketData, MessagePayload } from "../types/types";
 import { Message } from "../models/Message";
+import { Room } from "../models/Room";
 
 type IOServer = Server<
     ClientToServerEvents,
@@ -25,13 +18,12 @@ type IOSocket = Socket<
     SocketData
 >;
 
-const rooms = new Set<string>();
 
 export function registerRoomHandlers(
     io: IOServer,
     socket: IOSocket
 ): void {
-    socket.on("createRoom", (roomId) => {
+    socket.on("createRoom", async (roomId) => {
         const normalizedRoomId = roomId.trim();
         const userId = socket.data.userId;
 
@@ -45,27 +37,38 @@ export function registerRoomHandlers(
             return;
         }
 
-        if (rooms.has(normalizedRoomId)) {
-            socket.emit(
-                "errorMessage",
-                `Room "${normalizedRoomId}" already exists`
+        try {
+            const existingRoom = await Room.findOne({ roomId: normalizedRoomId });
+
+            if (existingRoom) {
+                socket.emit(
+                    "errorMessage",
+                    `Room "${normalizedRoomId}" already exists — try joining it instead`
+                );
+                return;
+            }
+
+            await Room.create({
+                roomId: normalizedRoomId,
+                createdBy: userId,
+            });
+
+            socket.join(normalizedRoomId);
+
+            console.log(
+                `${userId} created room ${normalizedRoomId}`
             );
-            return;
+
+            socket.emit("roomCreated", normalizedRoomId);
+
+            sendRoomUsers(io, normalizedRoomId);
+        } catch (error) {
+            console.error("FAILED TO CREATE ROOM:", error);
+            socket.emit("errorMessage", "Failed to create room");
         }
-
-        rooms.add(normalizedRoomId);
-        socket.join(normalizedRoomId);
-
-        console.log(
-            `${userId} created room ${normalizedRoomId}`
-        );
-
-        socket.emit("roomCreated", normalizedRoomId);
-
-        sendRoomUsers(io, normalizedRoomId);
     });
 
-    socket.on("joinRoom", (roomId) => {
+    socket.on("joinRoom", async (roomId) => {
         const normalizedRoomId = roomId.trim();
         const userId = socket.data.userId;
 
@@ -76,14 +79,6 @@ export function registerRoomHandlers(
 
         if (!normalizedRoomId) {
             socket.emit("errorMessage", "Room name is required");
-            return;
-        }
-
-        if (!rooms.has(normalizedRoomId)) {
-            socket.emit(
-                "errorMessage",
-                `Room "${normalizedRoomId}" does not exist`
-            );
             return;
         }
 
@@ -95,20 +90,35 @@ export function registerRoomHandlers(
             return;
         }
 
-        socket.join(normalizedRoomId);
+        try {
+            const existingRoom = await Room.findOne({ roomId: normalizedRoomId });
 
-        console.log(
-            `${userId} joined room ${normalizedRoomId}`
-        );
+            if (!existingRoom) {
+                socket.emit(
+                    "errorMessage",
+                    `Room "${normalizedRoomId}" does not exist`
+                );
+                return;
+            }
 
-        socket.emit("roomJoined", normalizedRoomId);
+            socket.join(normalizedRoomId);
 
-        io.to(normalizedRoomId).emit(
-            "roomNotification",
-            `${userId} joined the room`
-        );
+            console.log(
+                `${userId} joined room ${normalizedRoomId}`
+            );
 
-        sendRoomUsers(io, normalizedRoomId);
+            socket.emit("roomJoined", normalizedRoomId);
+
+            io.to(normalizedRoomId).emit(
+                "roomNotification",
+                `${userId} joined the room`
+            );
+
+            sendRoomUsers(io, normalizedRoomId);
+        } catch (error) {
+            console.error("FAILED TO JOIN ROOM:", error);
+            socket.emit("errorMessage", "Failed to join room");
+        }
     });
 
     socket.on("leaveRoom", (roomId) => {
@@ -168,14 +178,6 @@ export function registerRoomHandlers(
                 socket.emit(
                     "errorMessage",
                     "Message cannot be empty"
-                );
-                return;
-            }
-
-            if (!rooms.has(normalizedRoomId)) {
-                socket.emit(
-                    "errorMessage",
-                    "Room does not exist"
                 );
                 return;
             }
