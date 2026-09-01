@@ -12,14 +12,17 @@ import { registerRoomHandlers } from "./components/roomHandler";
 import { registerGroupHandlers } from "./components/groupHandler";
 import { connectDatabase } from "./config/database";
 
-
+const allowedOrigins = [
+    "http://localhost:5173",
+    "https://socket-io-frontend-c3wf.onrender.com",
+];
 const app = express();
 
 const server = http.createServer(app);
 
 app.use(
     cors({
-        origin: "http://localhost:5173",
+        origin: allowedOrigins,
         credentials: true,
     })
 );
@@ -41,7 +44,7 @@ const io: IOServer =
         server,
         {
             cors: {
-                origin: "http://localhost:5173",
+                origin: allowedOrigins,
                 methods: [ "GET", "POST" ]
             }
         }
