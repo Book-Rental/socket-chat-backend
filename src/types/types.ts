@@ -1,66 +1,151 @@
+export type ConversationType =
+    | "private"
+    | "group"
+    | "broadcast"
+    | "room";
+
+export type MessageType =
+    | "text"
+    | "image"
+    | "file"
+    | "audio"
+    | "video"
+    | "system";
+
+export type ParticipantRole =
+    | "owner"
+    | "admin"
+    | "member";
+
 export interface MessagePayload {
     id: string;
-    from: string;
-    to?: string;
-    recipients?: string[];
-    roomId?: string;
-    content: string;
-    timestamp: number;
-    type: "private" | "group" | "broadcast" | "room";
+    conversationId: string;
+    senderId: string;
+    type: MessageType;
+    content?: string;
+    clientMessageId?: string;
+    replyTo?: string;
+    createdAt: string;
+    updatedAt: string;
+}
+
+export interface ConversationPayload {
+    id: string;
+    type: ConversationType;
+    name?: string;
+    description?: string;
+    createdBy?: string;
+    participants: string[];
+    lastMessageId?: string;
+    lastMessageAt?: string;
+    messageCount: number;
+    createdAt?: string;
+    updatedAt?: string;
 }
 
 export interface ClientToServerEvents {
-    registerUser: (userId: string) => void;
+    registerUser: (
+        userId: string
+    ) => void;
 
-    sendPrivateMessage: (data: {
-        to: string;
-        content: string;
-    }) => void;
+    sendMessage: (
+        data: {
+            conversationId: string;
+            content?: string;
+            clientMessageId: string;
+            type?: MessageType;
+            replyTo?: string;
+        }
+    ) => void;
 
-    typing: (data: {
-        to: string;
-    }) => void;
+    messageDelivered: (
+        data: {
+            conversationId: string;
+            messageId: string;
+        }
+    ) => void;
 
-    stopTyping: (data: {
-        to: string;
-    }) => void;
+    messagesRead: (
+        data: {
+            conversationId: string;
+            messageId: string;
+        }
+    ) => void;
 
-    broadcastMessage: (content: string) => void;
+    typingStarted: (
+        data: {
+            conversationId: string;
+        }
+    ) => void;
 
-    createRoom: (roomId: string) => void;
+    typingStopped: (
+        data: {
+            conversationId: string;
+        }
+    ) => void;
 
-    joinRoom: (roomId: string) => void;
+    createGroup: (
+        data: {
+            name: string;
+            participants: string[];
+        }
+    ) => void;
 
-    leaveRoom: (roomId: string) => void;
+    createRoom: (
+        roomId: string
+    ) => void;
 
-    sendRoomMessage: (data: {
-        roomId: string;
-        content: string;
-    }) => void;
+    joinRoom: (
+        roomId: string
+    ) => void;
 
-    sendGroupMessage: (data: {
-        recipients: string[];
-        content: string;
-    }) => void;
+    leaveRoom: (
+        roomId: string
+    ) => void;
 
-    getMyRooms: () => void;
+    broadcastMessage: (
+        content: string
+    ) => void;
 }
 
 export interface ServerToClientEvents {
-    receivePrivateMessage: (
+    messageSent: (
         message: MessagePayload
     ) => void;
 
-    receiveBroadcastMessage: (
+    messageNew: (
         message: MessagePayload
     ) => void;
 
-    receiveRoomMessage: (
-        message: MessagePayload
+    messageDelivered: (
+        data: {
+            conversationId: string;
+            messageId: string;
+            userId: string;
+        }
     ) => void;
 
-    receiveGroupMessage: (
-        message: MessagePayload
+    messageRead: (
+        data: {
+            conversationId: string;
+            messageId: string;
+            userId: string;
+        }
+    ) => void;
+
+    unreadCountUpdated: (
+        data: {
+            conversationId: string;
+            count: number;
+        }
+    ) => void;
+
+    conversationUpdated: (
+        conversation: ConversationPayload
+    ) => void;
+
+    groupCreated: (
+        conversation: ConversationPayload
     ) => void;
 
     userOnline: (
@@ -75,12 +160,30 @@ export interface ServerToClientEvents {
         users: string[]
     ) => void;
 
-    typing: (
-        userId: string
+    typingStarted: (
+        data: {
+            conversationId: string;
+            userId: string;
+        }
     ) => void;
 
-    stopTyping: (
-        userId: string
+    typingStopped: (
+        data: {
+            conversationId: string;
+            userId: string;
+        }
+    ) => void;
+
+    receiveBroadcastMessage: (
+        message: MessagePayload
+    ) => void;
+
+    receiveRoomMessage: (
+        message: MessagePayload
+    ) => void;
+
+    receiveGroupMessage: (
+        message: MessagePayload
     ) => void;
 
     roomCreated: (
@@ -109,8 +212,6 @@ export interface ServerToClientEvents {
     errorMessage: (
         message: string
     ) => void;
-
-    myRooms: (roomIds: string[]) => void;
 }
 
 export interface InterServerEvents { }

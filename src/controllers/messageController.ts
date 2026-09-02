@@ -1,90 +1,153 @@
 import { Request, Response } from "express";
 import { Message } from "../models/Message";
+import { Conversation } from "../models/Conversation";
+import { ConversationParticipant } from "../models/ConversationParticipant";
 
-const HISTORY_LIMIT = 100;
+const HISTORY_LIMIT = 50;
 
-export const getPrivateHistory = async (req: Request, res: Response): Promise<void> => {
+export const getConversationHistory = async (
+    req: Request,
+    res: Response
+): Promise<void> => {
     try {
-        const { userA, userB } = req.params;
+        const { conversationId } = req.params;
 
-        if (!userA || !userB) {
-            res.status(400).json({ message: "Both user ids are required" });
+        if (!conversationId) {
+            res.status(400).json({
+                message: "Conversation ID is required",
+            });
             return;
         }
 
         const messages = await Message.find({
-            type: "private",
-            $or: [
-                { from: userA, to: userB },
-                { from: userB, to: userA },
-            ],
+            conversationId,
+            deletedAt: { $exists: false },
         })
-            .sort({ timestamp: 1 })
+            .sort({ createdAt: -1 })
             .limit(HISTORY_LIMIT)
             .lean();
 
-        res.json({ messages });
+        res.json({
+            messages: messages.reverse(),
+        });
     } catch (error) {
-        console.error("GET PRIVATE HISTORY ERROR:", error);
-        res.status(500).json({ message: "Failed to fetch private history" });
+        console.error(
+            "GET CONVERSATION HISTORY ERROR:",
+            error
+        );
+
+        res.status(500).json({
+            message: "Failed to fetch conversation history",
+        });
     }
 };
 
-export const getRoomHistory = async (req: Request, res: Response): Promise<void> => {
-    try {
-        const { roomId } = req.params;
-
-        if (!roomId) {
-            res.status(400).json({ message: "Room id is required" });
-            return;
-        }
-
-        const messages = await Message.find({ type: "room", roomId })
-            .sort({ timestamp: 1 })
-            .limit(HISTORY_LIMIT)
-            .lean();
-
-        res.json({ messages });
-    } catch (error) {
-        console.error("GET ROOM HISTORY ERROR:", error);
-        res.status(500).json({ message: "Failed to fetch room history" });
-    }
-};
-
-export const getBroadcastHistory = async (_req: Request, res: Response): Promise<void> => {
-    try {
-        const messages = await Message.find({ type: "broadcast" })
-            .sort({ timestamp: 1 })
-            .limit(HISTORY_LIMIT)
-            .lean();
-
-        res.json({ messages });
-    } catch (error) {
-        console.error("GET BROADCAST HISTORY ERROR:", error);
-        res.status(500).json({ message: "Failed to fetch broadcast history" });
-    }
-};
-
-export const getGroupHistory = async (req: Request, res: Response): Promise<void> => {
+export const getUnreadCounts = async (
+    req: Request,
+    res: Response
+): Promise<void> => {
     try {
         const { userId } = req.params;
 
         if (!userId) {
-            res.status(400).json({ message: "User id is required" });
+            res.status(400).json({
+                message: "User ID is required",
+            });
             return;
         }
 
-        const messages = await Message.find({
-            type: "group",
-            $or: [{ from: userId }, { recipients: userId }],
-        })
-            .sort({ timestamp: 1 })
-            .limit(HISTORY_LIMIT)
-            .lean();
+        const conversations =
+            await ConversationParticipant.find({
+                userId,
+                leftAt: { $exists: false },
+                unreadCount: { $gt: 0 },
+            })
+                .select("conversationId unreadCount")
+                .lean();
 
-        res.json({ messages });
+        res.json({
+            conversations,
+        });
     } catch (error) {
-        console.error("GET GROUP HISTORY ERROR:", error);
-        res.status(500).json({ message: "Failed to fetch group history" });
+        console.error(
+            "GET UNREAD COUNTS ERROR:",
+            error
+        );
+
+        res.status(500).json({
+            message: "Failed to fetch unread counts",
+        });
+    }
+};
+
+export const getUserConversations = async (
+    req: Request,
+    res: Response
+): Promise<void> => {
+    try {
+        const { userId } = req.params;
+
+        if (!userId) {
+            res.status(400).json({
+                message: "User ID is required",
+            });
+            return;
+        }
+
+        const participants =
+            await ConversationParticipant.find({
+                userId,
+                leftAt: { $exists: false },
+            })
+                .sort({ updatedAt: -1 })
+                .lean();
+
+        const conversationIds = participants.map(
+            participant => participant.conversationId
+        );
+
+        if (conversationIds.length === 0) {
+            res.json({
+                conversations: [],
+            });
+            return;
+        }
+
+        const conversations =
+            await Conversation.find({
+                _id: { $in: conversationIds },
+            })
+                .sort({ updatedAt: -1 })
+                .lean();
+
+        const unreadMap = new Map(
+            participants.map(participant => [
+                participant.conversationId.toString(),
+                participant.unreadCount,
+            ])
+        );
+
+        const result = conversations.map(
+            conversation => ({
+                ...conversation,
+                unreadCount:
+                    unreadMap.get(
+                        conversation._id.toString()
+                    ) || 0,
+            })
+        );
+
+        res.json({
+            conversations: result,
+        });
+    } catch (error) {
+        console.error(
+            "GET USER CONVERSATIONS ERROR:",
+            error
+        );
+
+        res.status(500).json({
+            message: "Failed to fetch conversations",
+        });
     }
 };
