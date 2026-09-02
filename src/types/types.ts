@@ -42,6 +42,8 @@ export interface ClientToServerEvents {
         recipients: string[];
         content: string;
     }) => void;
+
+    getMyRooms: () => void;
 }
 
 export interface ServerToClientEvents {
@@ -107,6 +109,8 @@ export interface ServerToClientEvents {
     errorMessage: (
         message: string
     ) => void;
+
+    myRooms: (roomIds: string[]) => void;
 }
 
 export interface InterServerEvents { }

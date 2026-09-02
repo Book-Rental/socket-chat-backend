@@ -27,40 +27,25 @@ export function registerRoomHandlers(
         const normalizedRoomId = roomId.trim();
         const userId = socket.data.userId;
 
-        if (!userId) {
-            socket.emit("errorMessage", "User is not registered");
-            return;
-        }
-
-        if (!normalizedRoomId) {
-            socket.emit("errorMessage", "Room name is required");
-            return;
-        }
+        if (!userId) return socket.emit("errorMessage", "User is not registered");
+        if (!normalizedRoomId) return socket.emit("errorMessage", "Room name is required");
 
         try {
             const existingRoom = await Room.findOne({ roomId: normalizedRoomId });
 
             if (existingRoom) {
-                socket.emit(
-                    "errorMessage",
-                    `Room "${normalizedRoomId}" already exists — try joining it instead`
-                );
+                socket.emit("errorMessage", `Room "${normalizedRoomId}" already exists — try joining it instead`);
                 return;
             }
 
             await Room.create({
                 roomId: normalizedRoomId,
                 createdBy: userId,
+                members: [userId],
             });
 
             socket.join(normalizedRoomId);
-
-            console.log(
-                `${userId} created room ${normalizedRoomId}`
-            );
-
             socket.emit("roomCreated", normalizedRoomId);
-
             sendRoomUsers(io, normalizedRoomId);
         } catch (error) {
             console.error("FAILED TO CREATE ROOM:", error);
@@ -72,21 +57,11 @@ export function registerRoomHandlers(
         const normalizedRoomId = roomId.trim();
         const userId = socket.data.userId;
 
-        if (!userId) {
-            socket.emit("errorMessage", "User is not registered");
-            return;
-        }
-
-        if (!normalizedRoomId) {
-            socket.emit("errorMessage", "Room name is required");
-            return;
-        }
+        if (!userId) return socket.emit("errorMessage", "User is not registered");
+        if (!normalizedRoomId) return socket.emit("errorMessage", "Room name is required");
 
         if (socket.rooms.has(normalizedRoomId)) {
-            socket.emit(
-                "errorMessage",
-                `You are already in room "${normalizedRoomId}"`
-            );
+            socket.emit("errorMessage", `You are already in room "${normalizedRoomId}"`);
             return;
         }
 
@@ -94,26 +69,18 @@ export function registerRoomHandlers(
             const existingRoom = await Room.findOne({ roomId: normalizedRoomId });
 
             if (!existingRoom) {
-                socket.emit(
-                    "errorMessage",
-                    `Room "${normalizedRoomId}" does not exist`
-                );
+                socket.emit("errorMessage", `Room "${normalizedRoomId}" does not exist`);
                 return;
             }
 
+            await Room.updateOne(
+                { roomId: normalizedRoomId },
+                { $addToSet: { members: userId } }
+            );
+
             socket.join(normalizedRoomId);
-
-            console.log(
-                `${userId} joined room ${normalizedRoomId}`
-            );
-
             socket.emit("roomJoined", normalizedRoomId);
-
-            io.to(normalizedRoomId).emit(
-                "roomNotification",
-                `${userId} joined the room`
-            );
-
+            io.to(normalizedRoomId).emit("roomNotification", `${userId} joined the room`);
             sendRoomUsers(io, normalizedRoomId);
         } catch (error) {
             console.error("FAILED TO JOIN ROOM:", error);
@@ -121,34 +88,52 @@ export function registerRoomHandlers(
         }
     });
 
-    socket.on("leaveRoom", (roomId) => {
+    socket.on("leaveRoom", async (roomId) => {
         const normalizedRoomId = roomId.trim();
         const userId = socket.data.userId;
 
         if (!userId || !normalizedRoomId) return;
 
         if (!socket.rooms.has(normalizedRoomId)) {
-            socket.emit(
-                "errorMessage",
-                "You are not a member of this room"
-            );
+            socket.emit("errorMessage", "You are not a member of this room");
             return;
         }
 
         socket.leave(normalizedRoomId);
 
-        console.log(
-            `${userId} left room ${normalizedRoomId}`
-        );
+        try {
+            await Room.updateOne(
+                { roomId: normalizedRoomId },
+                { $pull: { members: userId } }
+            );
+        } catch (error) {
+            console.error("FAILED TO UPDATE ROOM MEMBERS:", error);
+        }
 
         socket.emit("roomLeft", normalizedRoomId);
-
-        io.to(normalizedRoomId).emit(
-            "roomNotification",
-            `${userId} left the room`
-        );
-
+        io.to(normalizedRoomId).emit("roomNotification", `${userId} left the room`);
         sendRoomUsers(io, normalizedRoomId);
+    });
+
+    socket.on("getMyRooms", async () => {
+        const userId = socket.data.userId;
+        if (!userId) return;
+
+        try {
+            const myRooms = await Room.find({ members: userId }).lean();
+
+            myRooms.forEach((room) => {
+                socket.join(room.roomId);
+            });
+
+            socket.emit("myRooms", myRooms.map((room) => room.roomId));
+
+            myRooms.forEach((room) => {
+                sendRoomUsers(io, room.roomId);
+            });
+        } catch (error) {
+            console.error("FAILED TO FETCH MY ROOMS:", error);
+        }
     });
 
     socket.on(
