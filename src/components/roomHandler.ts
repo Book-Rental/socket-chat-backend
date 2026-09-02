@@ -1,8 +1,26 @@
-import { Server, Socket } from "socket.io";
-import { randomUUID } from "crypto";
-import { ClientToServerEvents, ServerToClientEvents, InterServerEvents, SocketData, MessagePayload } from "../types/types";
-import { Message } from "../models/Message";
-import { Room } from "../models/Room";
+import {
+    Server,
+    Socket,
+} from "socket.io";
+
+import {
+    ClientToServerEvents,
+    ServerToClientEvents,
+    InterServerEvents,
+    SocketData,
+} from "../types/types";
+
+import {
+    Room,
+} from "../models/Room";
+
+import {
+    Conversation,
+} from "../models/Conversation";
+
+import {
+    ConversationParticipant,
+} from "../models/ConversationParticipant";
 
 type IOServer = Server<
     ClientToServerEvents,
@@ -18,235 +36,403 @@ type IOSocket = Socket<
     SocketData
 >;
 
-
 export function registerRoomHandlers(
     io: IOServer,
     socket: IOSocket
 ): void {
-    socket.on("createRoom", async (roomId) => {
-        const normalizedRoomId = roomId.trim();
-        const userId = socket.data.userId;
-
-        if (!userId) return socket.emit("errorMessage", "User is not registered");
-        if (!normalizedRoomId) return socket.emit("errorMessage", "Room name is required");
-
-        try {
-            const existingRoom = await Room.findOne({ roomId: normalizedRoomId });
-
-            if (existingRoom) {
-                socket.emit("errorMessage", `Room "${normalizedRoomId}" already exists — try joining it instead`);
-                return;
-            }
-
-            await Room.create({
-                roomId: normalizedRoomId,
-                createdBy: userId,
-                members: [userId],
-            });
-
-            socket.join(normalizedRoomId);
-            socket.emit("roomCreated", normalizedRoomId);
-            sendRoomUsers(io, normalizedRoomId);
-        } catch (error) {
-            console.error("FAILED TO CREATE ROOM:", error);
-            socket.emit("errorMessage", "Failed to create room");
-        }
-    });
-
-    socket.on("joinRoom", async (roomId) => {
-        const normalizedRoomId = roomId.trim();
-        const userId = socket.data.userId;
-
-        if (!userId) return socket.emit("errorMessage", "User is not registered");
-        if (!normalizedRoomId) return socket.emit("errorMessage", "Room name is required");
-
-        if (socket.rooms.has(normalizedRoomId)) {
-            socket.emit("errorMessage", `You are already in room "${normalizedRoomId}"`);
-            return;
-        }
-
-        try {
-            const existingRoom = await Room.findOne({ roomId: normalizedRoomId });
-
-            if (!existingRoom) {
-                socket.emit("errorMessage", `Room "${normalizedRoomId}" does not exist`);
-                return;
-            }
-
-            await Room.updateOne(
-                { roomId: normalizedRoomId },
-                { $addToSet: { members: userId } }
-            );
-
-            socket.join(normalizedRoomId);
-            socket.emit("roomJoined", normalizedRoomId);
-            io.to(normalizedRoomId).emit("roomNotification", `${userId} joined the room`);
-            sendRoomUsers(io, normalizedRoomId);
-        } catch (error) {
-            console.error("FAILED TO JOIN ROOM:", error);
-            socket.emit("errorMessage", "Failed to join room");
-        }
-    });
-
-    socket.on("leaveRoom", async (roomId) => {
-        const normalizedRoomId = roomId.trim();
-        const userId = socket.data.userId;
-
-        if (!userId || !normalizedRoomId) return;
-
-        if (!socket.rooms.has(normalizedRoomId)) {
-            socket.emit("errorMessage", "You are not a member of this room");
-            return;
-        }
-
-        socket.leave(normalizedRoomId);
-
-        try {
-            await Room.updateOne(
-                { roomId: normalizedRoomId },
-                { $pull: { members: userId } }
-            );
-        } catch (error) {
-            console.error("FAILED TO UPDATE ROOM MEMBERS:", error);
-        }
-
-        socket.emit("roomLeft", normalizedRoomId);
-        io.to(normalizedRoomId).emit("roomNotification", `${userId} left the room`);
-        sendRoomUsers(io, normalizedRoomId);
-    });
-
-    socket.on("getMyRooms", async () => {
-        const userId = socket.data.userId;
-        if (!userId) return;
-
-        try {
-            const myRooms = await Room.find({ members: userId }).lean();
-
-            myRooms.forEach((room) => {
-                socket.join(room.roomId);
-            });
-
-            socket.emit("myRooms", myRooms.map((room) => room.roomId));
-
-            myRooms.forEach((room) => {
-                sendRoomUsers(io, room.roomId);
-            });
-        } catch (error) {
-            console.error("FAILED TO FETCH MY ROOMS:", error);
-        }
-    });
 
     socket.on(
-        "sendRoomMessage",
-        async ({ roomId, content }) => {
-            const normalizedRoomId = roomId.trim();
-            const trimmedContent = content.trim();
-            const from = socket.data.userId;
+        "createRoom",
+        async (roomId) => {
 
-            if (!from) {
+            const userId =
+                socket.data.userId;
+
+            const normalizedRoomId =
+                roomId?.trim();
+
+            if (!userId) {
                 socket.emit(
                     "errorMessage",
                     "User is not registered"
                 );
+
                 return;
             }
 
             if (!normalizedRoomId) {
                 socket.emit(
                     "errorMessage",
-                    "Room ID is required"
+                    "Room name is required"
                 );
+
                 return;
             }
-
-            if (!trimmedContent) {
-                socket.emit(
-                    "errorMessage",
-                    "Message cannot be empty"
-                );
-                return;
-            }
-
-            if (!socket.rooms.has(normalizedRoomId)) {
-                socket.emit(
-                    "errorMessage",
-                    "You are not a member of this room"
-                );
-                return;
-            }
-
-            const payload: MessagePayload = {
-                id: randomUUID(),
-                from,
-                roomId: normalizedRoomId,
-                content: trimmedContent,
-                timestamp: Date.now(),
-                type: "room",
-            };
 
             try {
-                await Message.create({
-                    from: payload.from,
-                    roomId: payload.roomId,
-                    content: payload.content,
-                    timestamp: payload.timestamp,
-                    type: "room",
+
+                const existingRoom =
+                    await Room.findOne({
+                        roomId:
+                            normalizedRoomId,
+                    });
+
+                if (existingRoom) {
+                    socket.emit(
+                        "errorMessage",
+                        "Room already exists"
+                    );
+
+                    return;
+                }
+
+                const room =
+                    await Room.create({
+                        roomId:
+                            normalizedRoomId,
+
+                        createdBy:
+                            userId,
+                    });
+
+                const conversation =
+                    await Conversation.create({
+                        type: "room",
+
+                        conversationKey:
+                            `room:${room._id}`,
+
+                        name:
+                            normalizedRoomId,
+
+                        createdBy:
+                            userId,
+
+                        participants: [
+                            userId,
+                        ],
+
+                        messageCount: 0,
+                    });
+
+                await ConversationParticipant.create({
+                    conversationId:
+                        conversation._id,
+
+                    userId,
+
+                    role: "owner",
+
+                    unreadCount: 0,
                 });
 
-                io.to(normalizedRoomId).emit(
-                    "receiveRoomMessage",
-                    payload
+                socket.join(
+                    normalizedRoomId
+                );
+
+                socket.emit(
+                    "roomCreated",
+                    normalizedRoomId
                 );
 
                 console.log(
-                    "ROOM MESSAGE SAVED:",
-                    payload
+                    `Room created: ${normalizedRoomId}`
                 );
+
             } catch (error) {
+
                 console.error(
-                    "FAILED TO SAVE ROOM MESSAGE:",
+                    "CREATE ROOM ERROR:",
                     error
                 );
 
                 socket.emit(
                     "errorMessage",
-                    "Failed to send room message"
+                    "Failed to create room"
                 );
             }
         }
     );
 
-    socket.on("disconnect", () => {
-        const joinedRooms = Array.from(socket.rooms).filter(
-            (roomId) => roomId !== socket.id
-        );
+    socket.on(
+        "joinRoom",
+        async (roomId) => {
 
-        setTimeout(() => {
-            joinedRooms.forEach((roomId) => {
-                sendRoomUsers(io, roomId);
-            });
-        }, 0);
-    });
+            const userId =
+                socket.data.userId;
+
+            const normalizedRoomId =
+                roomId?.trim();
+
+            if (!userId) {
+                socket.emit(
+                    "errorMessage",
+                    "User is not registered"
+                );
+
+                return;
+            }
+
+            if (!normalizedRoomId) {
+                return;
+            }
+
+            try {
+
+                const room =
+                    await Room.findOne({
+                        roomId:
+                            normalizedRoomId,
+                    });
+
+                if (!room) {
+                    socket.emit(
+                        "errorMessage",
+                        "Room does not exist"
+                    );
+
+                    return;
+                }
+
+                const conversation =
+                    await Conversation.findOne({
+                        type: "room",
+
+                        conversationKey:
+                            `room:${room._id}`,
+                    });
+
+                if (!conversation) {
+                    socket.emit(
+                        "errorMessage",
+                        "Room conversation not found"
+                    );
+
+                    return;
+                }
+
+                await ConversationParticipant.updateOne(
+                    {
+                        conversationId:
+                            conversation._id,
+
+                        userId,
+                    },
+                    {
+                        $setOnInsert: {
+                            role: "member",
+
+                            unreadCount: 0,
+                        },
+                    },
+                    {
+                        upsert: true,
+                    }
+                );
+
+                await Conversation.updateOne(
+                    {
+                        _id:
+                            conversation._id,
+                    },
+                    {
+                        $addToSet: {
+                            participants:
+                                userId,
+                        },
+                    }
+                );
+
+                socket.join(
+                    normalizedRoomId
+                );
+
+                socket.emit(
+                    "roomJoined",
+                    normalizedRoomId
+                );
+
+                io.to(normalizedRoomId)
+                    .emit(
+                        "roomNotification",
+                        `${userId} joined the room`
+                    );
+
+                sendRoomUsers(
+                    io,
+                    normalizedRoomId
+                );
+
+            } catch (error) {
+
+                console.error(
+                    "JOIN ROOM ERROR:",
+                    error
+                );
+
+                socket.emit(
+                    "errorMessage",
+                    "Failed to join room"
+                );
+            }
+        }
+    );
+
+    socket.on(
+        "leaveRoom",
+        async (roomId) => {
+
+            const userId =
+                socket.data.userId;
+
+            const normalizedRoomId =
+                roomId?.trim();
+
+            if (!userId || !normalizedRoomId) {
+                return;
+            }
+
+            try {
+
+                const room =
+                    await Room.findOne({
+                        roomId:
+                            normalizedRoomId,
+                    });
+
+                if (!room) {
+                    return;
+                }
+
+                const conversation =
+                    await Conversation.findOne({
+                        type: "room",
+
+                        conversationKey:
+                            `room:${room._id}`,
+                    });
+
+                if (conversation) {
+
+                    await ConversationParticipant.updateOne(
+                        {
+                            conversationId:
+                                conversation._id,
+
+                            userId,
+                        },
+                        {
+                            $set: {
+                                leftAt:
+                                    new Date(),
+                            },
+                        }
+                    );
+
+                    await Conversation.updateOne(
+                        {
+                            _id:
+                                conversation._id,
+                        },
+                        {
+                            $pull: {
+                                participants:
+                                    userId,
+                            },
+                        }
+                    );
+                }
+
+                socket.leave(
+                    normalizedRoomId
+                );
+
+                socket.emit(
+                    "roomLeft",
+                    normalizedRoomId
+                );
+
+                io.to(normalizedRoomId)
+                    .emit(
+                        "roomNotification",
+                        `${userId} left the room`
+                    );
+
+                sendRoomUsers(
+                    io,
+                    normalizedRoomId
+                );
+
+            } catch (error) {
+
+                console.error(
+                    "LEAVE ROOM ERROR:",
+                    error
+                );
+            }
+        }
+    );
+
+    socket.on(
+        "disconnect",
+        () => {
+
+            const joinedRooms =
+                Array.from(
+                    socket.rooms
+                ).filter(
+                    roomId =>
+                        roomId !== socket.id
+                );
+
+            setTimeout(
+                () => {
+                    joinedRooms.forEach(
+                        roomId =>
+                            sendRoomUsers(
+                                io,
+                                roomId
+                            )
+                    );
+                },
+                0
+            );
+        }
+    );
 }
 
 function sendRoomUsers(
     io: IOServer,
     roomId: string
 ): void {
-    const room = io.sockets.adapter.rooms.get(roomId);
 
-    if (!room) return;
+    const room =
+        io.sockets.adapter.rooms.get(
+            roomId
+        );
+
+    if (!room) {
+        return;
+    }
 
     const users: string[] = [];
 
-    room.forEach((socketId) => {
-        const roomSocket = io.sockets.sockets.get(socketId);
-        const userId = roomSocket?.data.userId;
+    room.forEach(
+        socketId => {
 
-        if (userId) {
-            users.push(userId);
+            const roomSocket =
+                io.sockets.sockets.get(
+                    socketId
+                );
+
+            const userId =
+                roomSocket?.data.userId;
+
+            if (userId) {
+                users.push(userId);
+            }
         }
-    });
+    );
 
     io.to(roomId).emit(
         "roomUsers",

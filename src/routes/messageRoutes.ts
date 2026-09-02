@@ -1,11 +1,29 @@
-import { Router } from "express";
-import { getPrivateHistory, getRoomHistory, getBroadcastHistory, getGroupHistory } from "../controllers/messageController";
+import {
+    Router,
+} from "express";
 
-const router = Router();
+import {
+    getConversationHistory,
+    getUnreadCounts,
+    getUserConversations,
+} from "../controllers/messageController";
 
-router.get("/private/:userA/:userB", getPrivateHistory);
-router.get("/room/:roomId", getRoomHistory);
-router.get("/broadcast", getBroadcastHistory);
-router.get("/group/:userId", getGroupHistory);
+const router =
+    Router();
+
+router.get(
+    "/conversation/:conversationId",
+    getConversationHistory
+);
+
+router.get(
+    "/conversations/:userId",
+    getUserConversations
+);
+
+router.get(
+    "/unread/:userId",
+    getUnreadCounts
+);
 
 export default router;

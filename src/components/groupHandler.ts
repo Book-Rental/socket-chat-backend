@@ -1,16 +1,23 @@
-import { Server, Socket } from "socket.io";
-import { randomUUID } from "crypto";
+import {
+    Server,
+    Socket,
+} from "socket.io";
 
 import {
     ClientToServerEvents,
     ServerToClientEvents,
     InterServerEvents,
     SocketData,
-    MessagePayload,
+    ConversationPayload,
 } from "../types/types";
 
-import { onlineUsers } from "../store";
-import { Message } from "../models/Message";
+import {
+    Conversation,
+} from "../models/Conversation";
+
+import {
+    ConversationParticipant,
+} from "../models/ConversationParticipant";
 
 type IOServer = Server<
     ClientToServerEvents,
@@ -30,101 +37,131 @@ export function registerGroupHandlers(
     io: IOServer,
     socket: IOSocket
 ): void {
-    socket.on(
-        "sendGroupMessage",
-        async ({ recipients, content }) => {
-            const from = socket.data.userId;
 
-            if (!from) {
+    socket.on(
+        "createGroup",
+        async ({
+            name,
+            participants,
+        }) => {
+
+            const userId =
+                socket.data.userId;
+
+            if (!userId) {
                 socket.emit(
                     "errorMessage",
                     "User is not registered"
                 );
+
                 return;
             }
 
-            if (!recipients || recipients.length === 0) {
+            const trimmedName =
+                name?.trim();
+
+            if (!trimmedName) {
                 socket.emit(
                     "errorMessage",
-                    "Select at least one recipient"
+                    "Group name is required"
                 );
+
                 return;
             }
 
-            const trimmedContent = content?.trim();
-
-            if (!trimmedContent) {
-                socket.emit(
-                    "errorMessage",
-                    "Message cannot be empty"
-                );
-                return;
-            }
-
-            const uniqueRecipients = [
-                ...new Set(
-                    recipients.filter(
-                        (userId) => userId !== from
-                    )
-                ),
+            const uniqueParticipants = [
+                ...new Set([
+                    userId,
+                    ...(participants || []),
+                ]),
             ];
 
-            if (uniqueRecipients.length === 0) {
+            if (
+                uniqueParticipants.length <
+                2
+            ) {
                 socket.emit(
                     "errorMessage",
-                    "You cannot send a group message only to yourself"
+                    "A group requires at least two users"
                 );
+
                 return;
             }
 
-            const payload: MessagePayload = {
-                id: randomUUID(),
-                from,
-                recipients: uniqueRecipients,
-                content: trimmedContent,
-                timestamp: Date.now(),
-                type: "group",
-            };
-
             try {
-                await Message.create({
-                    from: payload.from,
-                    recipients: payload.recipients,
-                    content: payload.content,
-                    timestamp: payload.timestamp,
-                    type: "group",
-                });
 
-                uniqueRecipients.forEach((userId) => {
-                    const recipientSocketId =
-                        onlineUsers.get(userId);
+                const conversation =
+                    await Conversation.create({
+                        type: "group",
 
-                    if (recipientSocketId) {
-                        io.to(recipientSocketId).emit(
-                            "receiveGroupMessage",
-                            payload
-                        );
-                    }
-                });
+                        name: trimmedName,
+
+                        createdBy: userId,
+
+                        participants:
+                            uniqueParticipants,
+
+                        messageCount: 0,
+                    });
+
+                await ConversationParticipant.insertMany(
+                    uniqueParticipants.map(
+                        participantId => ({
+                            conversationId:
+                                conversation._id,
+
+                            userId:
+                                participantId,
+
+                            role:
+                                participantId ===
+                                    userId
+                                    ? "owner"
+                                    : "member",
+
+                            unreadCount: 0,
+                        })
+                    )
+                );
+
+                const payload:
+                    ConversationPayload = {
+                    id:
+                        conversation._id.toString(),
+
+                    type:
+                        "group",
+
+                    name:
+                        conversation.name,
+
+                    participants:
+                        conversation.participants,
+
+                    messageCount:
+                        conversation.messageCount,
+                };
 
                 socket.emit(
-                    "receiveGroupMessage",
+                    "groupCreated",
                     payload
                 );
 
                 console.log(
-                    "GROUP MESSAGE SENT:",
+                    "GROUP CREATED:",
                     payload
                 );
+
             } catch (error) {
+
                 console.error(
-                    "FAILED TO SAVE GROUP MESSAGE:",
+                    "CREATE GROUP ERROR:",
                     error
                 );
 
                 socket.emit(
                     "errorMessage",
-                    "Failed to send group message"
+                    "Failed to create group"
                 );
             }
         }

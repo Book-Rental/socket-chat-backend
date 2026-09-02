@@ -1,69 +1,112 @@
 import mongoose, {
     Document,
-    Schema
+    Schema,
 } from "mongoose";
 
-export interface IMessage extends Document {
-    from: string;
-    to?: string;
-    recipients?: string[];
-    roomId?: string;
-    content: string;
-    timestamp: number;
-    type: "private" | "group" | "broadcast" | "room";
+export type MessageType =
+    | "text"
+    | "image"
+    | "file"
+    | "audio"
+    | "video"
+    | "system";
+
+export interface IMessage
+    extends Document {
+
+    conversationId:
+    mongoose.Types.ObjectId;
+
+    senderId: string;
+
+    type: MessageType;
+
+    content?: string;
+
+    clientMessageId?: string;
+
+    replyTo?:
+    mongoose.Types.ObjectId;
+
+    editedAt?: Date;
+
+    deletedAt?: Date;
+
+    createdAt: Date;
+
+    updatedAt: Date;
 }
 
-const messageSchema = new Schema<IMessage>(
-    {
-        from: {
-            type: String,
-            required: true,
-            index: true,
-        },
+const messageSchema =
+    new Schema<IMessage>(
+        {
+            conversationId: {
+                type: Schema.Types.ObjectId,
+                ref: "Conversation",
+                required: true,
+                index: true,
+            },
 
-        to: {
-            type: String,
-            index: true,
-        },
+            senderId: {
+                type: String,
+                required: true,
+                trim: true,
+                index: true,
+            },
 
-        recipients: [{
-            type: String,
-            index: true,
-        }],
+            type: {
+                type: String,
+                enum: [
+                    "text",
+                    "image",
+                    "file",
+                    "audio",
+                    "video",
+                    "system",
+                ],
+                default: "text",
+                required: true,
+                index: true,
+            },
 
-        roomId: {
-            type: String,
-            index: true,
-        },
+            content: {
+                type: String,
+                trim: true,
+            },
 
-        content: {
-            type: String,
-            required: true,
-            trim: true,
-        },
+            clientMessageId: {
+                type: String,
+                trim: true,
+            },
 
-        timestamp: {
-            type: Number,
-            required: true,
-            index: true,
-        },
+            replyTo: {
+                type: Schema.Types.ObjectId,
+                ref: "Message",
+            },
 
-        type: {
-            type: String,
-            enum: [
-                "private",
-                "group",
-                "broadcast",
-                "room"
-            ],
-            required: true,
-            index: true,
+            editedAt: {
+                type: Date,
+            },
+
+            deletedAt: {
+                type: Date,
+            },
         },
-    },
-    {
-        versionKey: false,
-    }
-);
+        {
+            timestamps: true,
+            versionKey: false,
+        }
+    );
+
+messageSchema.index({
+    conversationId: 1,
+    createdAt: -1,
+});
+
+messageSchema.index({
+    conversationId: 1,
+    clientMessageId: 1,
+});
 
 export const Message =
     mongoose.model<IMessage>(
