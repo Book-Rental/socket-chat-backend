@@ -20,9 +20,9 @@ import {
     registerOneToOneHandlers,
 } from "./components/oneToOneHandler";
 
-import {
-    registerBroadcastHandlers,
-} from "./components/broadcastHandler";
+// import {
+//     registerBroadcastHandlers,
+// } from "./components/broadcastHandler";
 
 import {
     registerRoomHandlers,
@@ -109,10 +109,10 @@ io.on(
 
 
         // Broadcast messages
-        registerBroadcastHandlers(
-            io,
-            socket
-        );
+        // registerBroadcastHandlers(
+        //     io,
+        //     socket
+        // );
 
 
         // Room messages

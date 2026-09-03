@@ -1,173 +1,173 @@
-import {
-    Server,
-    Socket,
-} from "socket.io";
+// import {
+//     Server,
+//     Socket,
+// } from "socket.io";
 
-import {
-    ClientToServerEvents,
-    ServerToClientEvents,
-    InterServerEvents,
-    SocketData,
-} from "../types/types";
+// import {
+//     ClientToServerEvents,
+//     ServerToClientEvents,
+//     InterServerEvents,
+//     SocketData,
+// } from "../types/types";
 
-import {
-    Conversation,
-} from "../models/Conversation";
+// import {
+//     Conversation,
+// } from "../models/Conversation";
 
-import {
-    Message,
-} from "../models/Message";
+// import {
+//     Message,
+// } from "../models/Message";
 
-type IOServer = Server<
-    ClientToServerEvents,
-    ServerToClientEvents,
-    InterServerEvents,
-    SocketData
->;
+// type IOServer = Server<
+//     ClientToServerEvents,
+//     ServerToClientEvents,
+//     InterServerEvents,
+//     SocketData
+// >;
 
-type IOSocket = Socket<
-    ClientToServerEvents,
-    ServerToClientEvents,
-    InterServerEvents,
-    SocketData
->;
+// type IOSocket = Socket<
+//     ClientToServerEvents,
+//     ServerToClientEvents,
+//     InterServerEvents,
+//     SocketData
+// >;
 
-export function registerBroadcastHandlers(
-    io: IOServer,
-    socket: IOSocket
-): void {
+// export function registerBroadcastHandlers(
+//     io: IOServer,
+//     socket: IOSocket
+// ): void {
 
-    socket.on(
-        "broadcastMessage",
-        async (content) => {
+//     socket.on(
+//         "broadcastMessage",
+//         async (content) => {
 
-            const senderId =
-                socket.data.userId;
+//             const senderId =
+//                 socket.data.userId;
 
-            if (!senderId) {
-                socket.emit(
-                    "errorMessage",
-                    "User is not registered"
-                );
+//             if (!senderId) {
+//                 socket.emit(
+//                     "errorMessage",
+//                     "User is not registered"
+//                 );
 
-                return;
-            }
+//                 return;
+//             }
 
-            const trimmedContent =
-                content?.trim();
+//             const trimmedContent =
+//                 content?.trim();
 
-            if (!trimmedContent) {
-                socket.emit(
-                    "errorMessage",
-                    "Message cannot be empty"
-                );
+//             if (!trimmedContent) {
+//                 socket.emit(
+//                     "errorMessage",
+//                     "Message cannot be empty"
+//                 );
 
-                return;
-            }
+//                 return;
+//             }
 
-            try {
+//             try {
 
-                let conversation =
-                    await Conversation.findOne({
-                        type: "broadcast",
-                        conversationKey:
-                            "global-broadcast",
-                    });
+//                 let conversation =
+//                     await Conversation.findOne({
+//                         type: "broadcast",
+//                         conversationKey:
+//                             "global-broadcast",
+//                     });
 
-                if (!conversation) {
+//                 if (!conversation) {
 
-                    conversation =
-                        await Conversation.create({
-                            type: "broadcast",
+//                     conversation =
+//                         await Conversation.create({
+//                             type: "broadcast",
 
-                            conversationKey:
-                                "global-broadcast",
+//                             conversationKey:
+//                                 "global-broadcast",
 
-                            participants: [],
+//                             participants: [],
 
-                            createdBy:
-                                senderId,
+//                             createdBy:
+//                                 senderId,
 
-                            messageCount: 0,
-                        });
-                }
+//                             messageCount: 0,
+//                         });
+//                 }
 
-                const message =
-                    await Message.create({
-                        conversationId:
-                            conversation._id,
+//                 const message =
+//                     await Message.create({
+//                         conversationId:
+//                             conversation._id,
 
-                        senderId,
+//                         senderId,
 
-                        type: "text",
+//                         type: "text",
 
-                        content:
-                            trimmedContent,
-                    });
+//                         content:
+//                             trimmedContent,
+//                     });
 
-                await Conversation.findByIdAndUpdate(
-                    conversation._id,
-                    {
-                        $set: {
-                            lastMessageId:
-                                message._id,
+//                 await Conversation.findByIdAndUpdate(
+//                     conversation._id,
+//                     {
+//                         $set: {
+//                             lastMessageId:
+//                                 message._id,
 
-                            lastMessageAt:
-                                message.createdAt,
-                        },
+//                             lastMessageAt:
+//                                 message.createdAt,
+//                         },
 
-                        $inc: {
-                            messageCount: 1,
-                        },
-                    }
-                );
+//                         $inc: {
+//                             messageCount: 1,
+//                         },
+//                     }
+//                 );
 
-                const payload = {
-                    id:
-                        message._id.toString(),
+//                 const payload = {
+//                     id:
+//                         message._id.toString(),
 
-                    conversationId:
-                        conversation._id.toString(),
+//                     conversationId:
+//                         conversation._id.toString(),
 
-                    senderId,
+//                     senderId,
 
-                    type:
-                        message.type,
+//                     type:
+//                         message.type,
 
-                    content:
-                        message.content,
+//                     content:
+//                         message.content,
 
-                    createdAt:
-                        message.createdAt.toISOString(),
+//                     createdAt:
+//                         message.createdAt.toISOString(),
 
-                    updatedAt:
-                        message.updatedAt.toISOString(),
-                };
+//                     updatedAt:
+//                         message.updatedAt.toISOString(),
+//                 };
 
-                // Everyone except sender
-                socket.broadcast.emit(
-                    "receiveBroadcastMessage",
-                    payload
-                );
+//                 // Everyone except sender
+//                 socket.broadcast.emit(
+//                     "receiveBroadcastMessage",
+//                     payload
+//                 );
 
-                // Sender also gets confirmation
-                socket.emit(
-                    "messageSent",
-                    payload
-                );
+//                 // Sender also gets confirmation
+//                 socket.emit(
+//                     "messageSent",
+//                     payload
+//                 );
 
-            } catch (error) {
+//             } catch (error) {
 
-                console.error(
-                    "BROADCAST ERROR:",
-                    error
-                );
+//                 console.error(
+//                     "BROADCAST ERROR:",
+//                     error
+//                 );
 
-                socket.emit(
-                    "errorMessage",
-                    "Failed to send broadcast message"
-                );
-            }
-        }
-    );
-}
+//                 socket.emit(
+//                     "errorMessage",
+//                     "Failed to send broadcast message"
+//                 );
+//             }
+//         }
+//     );
+// }
