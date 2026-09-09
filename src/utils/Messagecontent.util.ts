@@ -1,4 +1,4 @@
-import { IMessageContent, MessageType } from "./Message";
+import { IMessageContent, MessageType } from "../models/Message";
 
 /**
  * Matches a string made up ONLY of emoji (plus optional joiners/variation

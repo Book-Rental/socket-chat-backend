@@ -9,15 +9,21 @@
     "build": "tsc"
   },
   "dependencies": {
+    "@socket.io/redis-adapter": "^8.3.0",
+    "cloudinary": "^2.11.0",
     "cors": "^2.8.5",
     "dotenv": "^17.4.2",
     "express": "^5.1.0",
+    "ioredis": "^6.0.0",
     "mongoose": "^9.9.4",
+    "multer": "^2.3.0",
+    "redis": "^6.2.1",
     "socket.io": "^4.8.1"
   },
   "devDependencies": {
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",
+    "@types/multer": "^2.2.0",
     "@types/node": "^24.13.3",
     "nodemon": "^3.1.14",
     "socket.io-client": "^4.8.3",
