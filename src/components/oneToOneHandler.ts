@@ -1,138 +1,99 @@
 import { Server, Socket } from "socket.io";
-
 import {
-    ClientToServerEvents,
-    ServerToClientEvents,
-    InterServerEvents,
-    SocketData,
-    MessagePayload,
+    ClientToServerEvents, ServerToClientEvents,
+    InterServerEvents, SocketData, MessagePayload
 } from "../types/types";
-
+import {
+    sendMessageService, editMessageService, deleteMessageService,
+    markMessageDeliveredService, markMessagesReadService,
+    deliverPendingMessages
+} from "../services/message.service";
 import { Conversation } from "../models/Conversation";
 import { ConversationParticipant } from "../models/ConversationParticipant";
 import { Message } from "../models/Message";
+import {
+    setOnlineUser, getOnlineUser, removeOnlineUser, getOnlineUsers
+} from "../store";
+import { messageSubClient } from "../config/redis";
 
-import { onlineUsers } from "../store";
-import { buildMessageContent, isEmojiOnly, isValidMessageContent } from "../models/Messagecontent.util";
+type IOServer = Server<ClientToServerEvents, ServerToClientEvents, InterServerEvents, SocketData>;
+type IOSocket = Socket<ClientToServerEvents, ServerToClientEvents, InterServerEvents, SocketData>;
 
-type IOServer = Server<
-    ClientToServerEvents,
-    ServerToClientEvents,
-    InterServerEvents,
-    SocketData
->;
+const MESSAGE_CHANNEL = "chat:messages";
+let subscribed = false;
 
-type IOSocket = Socket<
-    ClientToServerEvents,
-    ServerToClientEvents,
-    InterServerEvents,
-    SocketData
->;
+const toMessagePayload = (message: any): MessagePayload => ({
+    id: message._id.toString(),
+    conversationId: message.conversationId.toString(),
+    senderId: message.senderId,
+    type: message.type,
+    content: message.content,
+    clientMessageId: message.clientMessageId,
+    replyTo: message.replyTo?.toString(),
+    status: message.status,
+    editedAt: message.editedAt?.toISOString(),
+    deletedAt: message.deletedAt?.toISOString(),
+    createdAt: message.createdAt.toISOString(),
+    updatedAt: message.updatedAt.toISOString(),
+});
 
-function toMessagePayload(message: any): MessagePayload {
-    return {
-        id: message._id.toString(),
-        conversationId: message.conversationId.toString(),
-        senderId: message.senderId,
-        type: message.type,
-        content: message.content,
-        clientMessageId: message.clientMessageId,
-        replyTo: message.replyTo?.toString(),
-        status: message.status,
-        editedAt: message.editedAt?.toISOString(),
-        deletedAt: message.deletedAt?.toISOString(),
-        createdAt: message.createdAt.toISOString(),
-        updatedAt: message.updatedAt.toISOString(),
-    };
+async function subscribeToMessages(io: IOServer) {
+    if (subscribed) return;
+    subscribed = true;
+
+    await messageSubClient.subscribe(MESSAGE_CHANNEL, async rawMessage => {
+        try {
+            const { messageId, recipientIds } = JSON.parse(rawMessage);
+            const message = await Message.findById(messageId).lean();
+            if (!message) return;
+
+            const payload = toMessagePayload(message);
+
+            for (const participantId of recipientIds) {
+                const socketId = await getOnlineUser(participantId);
+                if (!socketId) continue;
+
+                io.to(socketId).emit("messageNew", payload);
+
+                const participant = await ConversationParticipant.findOne({
+                    conversationId: message.conversationId,
+                    userId: participantId,
+                }).lean();
+
+                io.to(socketId).emit("unreadCountUpdated", {
+                    conversationId: message.conversationId.toString(),
+                    count: participant?.unreadCount ?? 0,
+                });
+            }
+        } catch (error) {
+            console.error("REDIS MESSAGE ERROR:", error);
+        }
+    });
 }
 
-async function deliverPendingMessages(
-    io: IOServer,
-    userId: string
-): Promise<void> {
-    const participants = await ConversationParticipant.find({
-        userId,
-        leftAt: { $exists: false },
-    })
-        .select("conversationId")
-        .lean();
-
-    const conversationIds = participants.map(
-        (participant) => participant.conversationId
+export function registerOneToOneHandlers(io: IOServer, socket: IOSocket): void {
+    subscribeToMessages(io).catch(error =>
+        console.error("REDIS SUBSCRIBE ERROR:", error)
     );
 
-    if (!conversationIds.length) return;
-
-    const pendingMessages = await Message.find({
-        conversationId: { $in: conversationIds },
-        senderId: { $ne: userId },
-        status: "sent",
-        deletedAt: { $exists: false },
-    }).lean();
-
-    for (const message of pendingMessages) {
-        const updated = await Message.findOneAndUpdate(
-            { _id: message._id, status: "sent" },
-            { $set: { status: "delivered" } },
-            { new: true }
-        );
-
-        if (!updated) continue;
-
-        await ConversationParticipant.updateOne(
-            {
-                conversationId: message.conversationId,
-                userId,
-                leftAt: { $exists: false },
-            },
-            {
-                $set: {
-                    lastDeliveredMessageId: message._id,
-                    lastDeliveredAt: new Date(),
-                },
-            }
-        );
-
-        const senderSocketId = onlineUsers.get(message.senderId);
-
-        if (senderSocketId) {
-            io.to(senderSocketId).emit("messageDelivered", {
-                conversationId: message.conversationId.toString(),
-                messageId: message._id.toString(),
-                userId,
-                status: "delivered",
-            });
-        }
-    }
-}
-
-export function registerOneToOneHandlers(
-    io: IOServer,
-    socket: IOSocket
-): void {
-    socket.on("registerUser", async (userId) => {
+    socket.on("registerUser", async userId => {
         try {
             const trimmedUserId = userId.trim();
-
-            if (!trimmedUserId) {
-                socket.emit("errorMessage", "Invalid username");
-                return;
-            }
+            if (!trimmedUserId)
+                return socket.emit("errorMessage", "Invalid username");
 
             const previousUserId = socket.data.userId;
 
             if (previousUserId && previousUserId !== trimmedUserId) {
-                const previousSocketId = onlineUsers.get(previousUserId);
-
-                if (previousSocketId === socket.id) {
-                    onlineUsers.delete(previousUserId);
-                }
+                const previousSocketId = await getOnlineUser(previousUserId);
+                if (previousSocketId === socket.id)
+                    await removeOnlineUser(previousUserId, socket.id);
             }
 
             socket.data.userId = trimmedUserId;
-            onlineUsers.set(trimmedUserId, socket.id);
+            await setOnlineUser(trimmedUserId, socket.id);
 
-            io.emit("onlineUsers", Array.from(onlineUsers.keys()));
+            io.emit("onlineUsers", await getOnlineUsers());
             socket.broadcast.emit("userOnline", trimmedUserId);
 
             await deliverPendingMessages(io, trimmedUserId);
@@ -141,351 +102,104 @@ export function registerOneToOneHandlers(
         }
     });
 
-    socket.on("sendMessage", async (data) => {
+    socket.on("sendMessage", async data => {
         try {
             const senderId = socket.data.userId;
+            if (!senderId)
+                return socket.emit("errorMessage", "User is not registered");
 
-            if (!senderId) {
-                socket.emit("errorMessage", "User is not registered");
-                return;
-            }
-
-            const {
-                conversationId,
-                clientMessageId,
-                type = "text",
-                replyTo,
-                ...contentFields
-            } = data;
-
-            if (!conversationId) {
-                socket.emit("errorMessage", "Conversation ID is required");
-                return;
-            }
-
-            /*
-             * The client sends a flat payload (text / mediaUrl / caption /
-             * latitude / etc. - see ClientToServerEvents.sendMessage in
-             * types.ts). buildMessageContent() picks out only the fields
-             * that belong to `type` and shapes them into the content
-             * object we actually store; isValidMessageContent() checks
-             * the result has what it needs before we save it.
-             */
-            const builtContent = buildMessageContent(type, contentFields);
-
-            if (!isValidMessageContent(type, builtContent)) {
-                socket.emit(
-                    "errorMessage",
-                    "Message content is required"
-                );
-                return;
-            }
-
-            const conversation = await Conversation.findById(conversationId);
-
-            if (!conversation) {
-                socket.emit("errorMessage", "Conversation not found");
-                return;
-            }
-
-            if (!conversation.participants.includes(senderId)) {
-                socket.emit(
-                    "errorMessage",
-                    "You are not a participant in this conversation"
-                );
-                return;
-            }
-
-            if (clientMessageId) {
-                const existingMessage = await Message.findOne({
-                    conversationId,
-                    clientMessageId,
-                });
-
-                if (existingMessage) {
-                    socket.emit(
-                        "messageSent",
-                        toMessagePayload(existingMessage)
-                    );
-                    return;
-                }
-            }
-
-            const otherParticipants = conversation.participants.filter(
-                (participant) => participant !== senderId
-            );
-
-            const recipientId = otherParticipants[0];
-
-            const recipientSocketId = recipientId
-                ? onlineUsers.get(recipientId)
-                : undefined;
-
-            const initialStatus =
-                conversation.type === "private" && recipientSocketId
-                    ? "delivered"
-                    : "sent";
-
-            const message = await Message.create({
-                conversationId,
-                senderId,
-                type,
-                content: builtContent,
-                clientMessageId,
-                replyTo,
-                status: initialStatus,
-                deliveredTo:
-                    initialStatus === "delivered" && recipientId
-                        ? [recipientId]
-                        : [],
-            });
-
-            conversation.lastMessageId = message._id;
-            conversation.lastMessageAt = message.createdAt;
-            conversation.messageCount += 1;
-
-            await conversation.save();
-
-            for (const participantId of otherParticipants) {
-                await ConversationParticipant.updateOne(
-                    {
-                        conversationId: conversation._id,
-                        userId: participantId,
-                        leftAt: { $exists: false },
-                    },
-                    { $inc: { unreadCount: 1 } }
-                );
-
-                if (
-                    initialStatus === "delivered" &&
-                    participantId === recipientId
-                ) {
-                    await ConversationParticipant.updateOne(
-                        {
-                            conversationId: conversation._id,
-                            userId: participantId,
-                        },
-                        {
-                            $set: {
-                                lastDeliveredMessageId: message._id,
-                                lastDeliveredAt: new Date(),
-                            },
-                        }
-                    );
-                }
-            }
-
-            const payload = toMessagePayload(message);
+            const result = await sendMessageService(senderId, data);
+            const payload = toMessagePayload(result.message);
 
             socket.emit("messageSent", payload);
+            if (result.duplicate) return;
 
-            if (initialStatus === "delivered" && recipientId) {
+            if (result.initialStatus === "delivered" && result.recipientId) {
                 socket.emit("messageDelivered", {
-                    conversationId: conversation._id.toString(),
-                    messageId: message._id.toString(),
-                    userId: recipientId,
+                    conversationId: result.conversation._id.toString(),
+                    messageId: result.message._id.toString(),
+                    userId: result.recipientId,
                     status: "delivered",
                 });
             }
 
-            for (const participantId of otherParticipants) {
-                const socketId = onlineUsers.get(participantId);
-
-                if (!socketId) continue;
-
-                io.to(socketId).emit("messageNew", payload);
-
-                const participant = await ConversationParticipant.findOne({
-                    conversationId: conversation._id,
-                    userId: participantId,
-                }).lean();
-
-                io.to(socketId).emit("unreadCountUpdated", {
-                    conversationId: conversation._id.toString(),
-                    count: participant?.unreadCount ?? 0,
-                });
-            }
+            const c = result.conversation;
 
             io.emit("conversationUpdated", {
-                id: conversation._id.toString(),
-                type: conversation.type,
-                name: conversation.name,
-                description: conversation.description,
-                createdBy: conversation.createdBy,
-                participants: conversation.participants,
-                lastMessageId: conversation.lastMessageId?.toString(),
-                lastMessageAt: conversation.lastMessageAt?.toISOString(),
-                messageCount: conversation.messageCount,
-                createdAt: conversation.createdAt?.toISOString(),
-                updatedAt: conversation.updatedAt?.toISOString(),
+                id: c._id.toString(),
+                type: c.type,
+                name: c.name,
+                description: c.description,
+                createdBy: c.createdBy,
+                participants: c.participants,
+                lastMessageId: c.lastMessageId?.toString(),
+                lastMessageAt: c.lastMessageAt?.toISOString(),
+                messageCount: c.messageCount,
+                createdAt: c.createdAt?.toISOString(),
+                updatedAt: c.updatedAt?.toISOString(),
             });
         } catch (error) {
             console.error("SEND MESSAGE ERROR:", error);
-            socket.emit("errorMessage", "Failed to send message");
+            socket.emit(
+                "errorMessage",
+                error instanceof Error ? error.message : "Failed to send message"
+            );
         }
     });
 
     socket.on("editMessage", async ({ messageId, text }) => {
         try {
             const userId = socket.data.userId;
+            if (!userId)
+                return socket.emit("errorMessage", "User is not registered");
 
-            if (!userId) {
-                socket.emit("errorMessage", "User is not registered");
-                return;
-            }
+            const result = await editMessageService(userId, messageId, text);
+            const payload = toMessagePayload(result.message);
 
-            const trimmedText = text?.trim();
-
-            if (!trimmedText) {
-                socket.emit("errorMessage", "Message content is required");
-                return;
-            }
-
-            const message = await Message.findById(messageId);
-
-            if (!message) {
-                socket.emit("errorMessage", "Message not found");
-                return;
-            }
-
-            // Only the sender can edit their own message.
-            if (message.senderId !== userId) {
-                socket.emit(
-                    "errorMessage",
-                    "You can only edit your own message"
-                );
-                return;
-            }
-
-            // Deleted messages cannot be edited.
-            if (message.deletedAt) {
-                socket.emit(
-                    "errorMessage",
-                    "Deleted message cannot be edited"
-                );
-                return;
-            }
-
-            // Editing only makes sense for text-shaped content -
-            // preserve any other fields (e.g. a caption stays a caption),
-            // but recompute `type` in case the edit changed emoji-only-ness.
-            message.content = {
-                ...message.content,
-                type: isEmojiOnly(trimmedText) ? "emoji" : "text",
-                text: trimmedText,
-            };
-
-            message.editedAt = new Date();
-
-            await message.save();
-
-            const conversation = await Conversation.findById(
-                message.conversationId
-            ).lean();
-
-            if (!conversation) {
-                socket.emit("errorMessage", "Conversation not found");
-                return;
-            }
-
-            const payload = toMessagePayload(message);
-
-            for (const participantId of conversation.participants) {
-                const socketId = onlineUsers.get(participantId);
-                if (!socketId) continue;
-
-                io.to(socketId).emit("messageEdited", payload);
+            for (const participantId of result.conversation.participants) {
+                const socketId = await getOnlineUser(participantId);
+                if (socketId) io.to(socketId).emit("messageEdited", payload);
             }
         } catch (error) {
             console.error("EDIT MESSAGE ERROR:", error);
-            socket.emit("errorMessage", "Failed to edit message");
+            socket.emit(
+                "errorMessage",
+                error instanceof Error ? error.message : "Failed to edit message"
+            );
         }
     });
 
     socket.on("deleteMessage", async ({ messageId, forEveryone }) => {
         try {
             const userId = socket.data.userId;
+            if (!userId)
+                return socket.emit("errorMessage", "User is not registered");
 
-            if (!userId) {
-                socket.emit("errorMessage", "User is not registered");
-                return;
-            }
-
-            const message = await Message.findById(messageId);
-
-            if (!message) {
-                socket.emit("errorMessage", "Message not found");
-                return;
-            }
-
-            // Only sender can delete
-            if (message.senderId !== userId) {
-                socket.emit(
-                    "errorMessage",
-                    "You can only delete your own message"
-                );
-                return;
-            }
-
-            // Already deleted
-            if (message.deletedAt) {
-                return;
-            }
-
-            const deletedAt = new Date();
-
-            if (forEveryone) {
-                message.deletedForEveryone = true;
-                message.deletedAt = deletedAt;
-                // Keep the MongoDB document, but remove the visible content.
-                message.content = undefined;
-            } else {
-                // "Delete for me" - only hide it for this user.
-                message.deletedFor = [
-                    ...(message.deletedFor ?? []),
-                    userId,
-                ];
-            }
-
-            await message.save();
-
-            // "Delete for me" is invisible to everyone else - nothing to broadcast.
-            if (!forEveryone) {
-                socket.emit("messageDeleted", {
-                    messageId: message._id.toString(),
-                    conversationId: message.conversationId.toString(),
-                    deletedAt: deletedAt.toISOString(),
-                    forEveryone: false,
-                });
-                return;
-            }
-
-            const conversation = await Conversation.findById(
-                message.conversationId
-            ).lean();
-
-            if (!conversation) {
-                socket.emit("errorMessage", "Conversation not found");
-                return;
-            }
+            const result = await deleteMessageService(
+                userId, messageId, forEveryone ?? false
+            );
+            if (!result) return;
 
             const payload = {
-                messageId: message._id.toString(),
-                conversationId: message.conversationId.toString(),
-                deletedAt: deletedAt.toISOString(),
-                forEveryone: true,
+                messageId: result.message._id.toString(),
+                conversationId: result.message.conversationId.toString(),
+                deletedAt: result.deletedAt.toISOString(),
+                forEveryone: result.forEveryone,
             };
 
-            // Notify all participants
-            for (const participantId of conversation.participants) {
-                const socketId = onlineUsers.get(participantId);
-                if (!socketId) continue;
+            if (!result.forEveryone)
+                return socket.emit("messageDeleted", payload);
 
-                io.to(socketId).emit("messageDeleted", payload);
+            for (const participantId of result.conversation!.participants) {
+                const socketId = await getOnlineUser(participantId);
+                if (socketId) io.to(socketId).emit("messageDeleted", payload);
             }
         } catch (error) {
             console.error("DELETE MESSAGE ERROR:", error);
-            socket.emit("errorMessage", "Failed to delete message");
+            socket.emit(
+                "errorMessage",
+                error instanceof Error ? error.message : "Failed to delete message"
+            );
         }
     });
 
@@ -494,43 +208,16 @@ export function registerOneToOneHandlers(
             const userId = socket.data.userId;
             if (!userId) return;
 
-            const participant = await ConversationParticipant.findOne({
-                conversationId,
-                userId,
-            });
-
-            if (!participant) return;
-
-            participant.lastDeliveredMessageId = messageId as any;
-            participant.lastDeliveredAt = new Date();
-            await participant.save();
-
-            const message = await Message.findById(messageId);
+            const message = await markMessageDeliveredService(
+                userId, conversationId, messageId
+            );
             if (!message) return;
 
-            if (!message.deliveredTo?.includes(userId)) {
-                message.deliveredTo = [
-                    ...(message.deliveredTo ?? []),
-                    userId,
-                ];
-            }
-
-            if (message.status === "sent") {
-                message.status = "delivered";
-            }
-
-            await message.save();
-
-            const senderSocketId = onlineUsers.get(message.senderId);
-
-            if (senderSocketId) {
+            const senderSocketId = await getOnlineUser(message.senderId);
+            if (senderSocketId)
                 io.to(senderSocketId).emit("messageDelivered", {
-                    conversationId,
-                    messageId,
-                    userId,
-                    status: "delivered",
+                    conversationId, messageId, userId, status: "delivered",
                 });
-            }
         } catch (error) {
             console.error("MESSAGE DELIVERED ERROR:", error);
         }
@@ -541,115 +228,68 @@ export function registerOneToOneHandlers(
             const userId = socket.data.userId;
             if (!userId) return;
 
-            const participant = await ConversationParticipant.findOne({
-                conversationId,
-                userId,
-            });
-
-            if (!participant) return;
-
-            const upToMessage = await Message.findById(messageId).lean();
-            if (!upToMessage) return;
-
-            participant.lastReadMessageId = messageId as any;
-            participant.lastReadAt = new Date();
-            participant.unreadCount = 0;
-            await participant.save();
-
-            await Message.updateMany(
-                {
-                    conversationId,
-                    senderId: { $ne: userId },
-                    createdAt: { $lte: upToMessage.createdAt },
-                    status: { $ne: "read" },
-                },
-                {
-                    $set: { status: "read" },
-                    $addToSet: { readBy: userId, deliveredTo: userId },
-                }
+            const message = await markMessagesReadService(
+                userId, conversationId, messageId
             );
+            if (!message) return;
 
-            const senderSocketId = onlineUsers.get(upToMessage.senderId);
-
-            if (senderSocketId) {
+            const senderSocketId = await getOnlineUser(message.senderId);
+            if (senderSocketId)
                 io.to(senderSocketId).emit("messageRead", {
-                    conversationId,
-                    messageId,
-                    userId,
-                    status: "read",
+                    conversationId, messageId, userId, status: "read",
                 });
-            }
 
-            socket.emit("unreadCountUpdated", { conversationId, count: 0 });
+            socket.emit("unreadCountUpdated", {
+                conversationId, count: 0,
+            });
         } catch (error) {
             console.error("MESSAGES READ ERROR:", error);
         }
     });
 
-    socket.on("typingStarted", async ({ conversationId }) => {
+    const typing = async (
+        conversationId: string,
+        event: "typingStarted" | "typingStopped"
+    ) => {
         try {
             const userId = socket.data.userId;
             if (!userId) return;
 
-            const conversation = await Conversation.findById(
-                conversationId
-            ).lean();
-
+            const conversation = await Conversation.findById(conversationId).lean();
             if (!conversation) return;
 
-            conversation.participants
-                .filter((participant) => participant !== userId)
-                .forEach((participant) => {
-                    const socketId = onlineUsers.get(participant);
-                    if (socketId) {
-                        io.to(socketId).emit("typingStarted", {
-                            conversationId,
-                            userId,
-                        });
-                    }
-                });
+            for (const participant of conversation.participants.filter(p => p !== userId)) {
+                const socketId = await getOnlineUser(participant);
+                if (socketId)
+                    io.to(socketId).emit(event, { conversationId, userId });
+            }
         } catch (error) {
-            console.error("TYPING STARTED ERROR:", error);
+            console.error(`${event.toUpperCase()} ERROR: `, error);
         }
-    });
+    };
 
-    socket.on("typingStopped", async ({ conversationId }) => {
+    socket.on("typingStarted", ({ conversationId }) =>
+        typing(conversationId, "typingStarted")
+    );
+
+    socket.on("typingStopped", ({ conversationId }) =>
+        typing(conversationId, "typingStopped")
+    );
+
+    socket.on("disconnect", async () => {
         try {
             const userId = socket.data.userId;
             if (!userId) return;
 
-            const conversation = await Conversation.findById(
-                conversationId
-            ).lean();
+            const currentSocketId = await getOnlineUser(userId);
+            if (currentSocketId !== socket.id) return;
 
-            if (!conversation) return;
+            await removeOnlineUser(userId, socket.id);
 
-            conversation.participants
-                .filter((participant) => participant !== userId)
-                .forEach((participant) => {
-                    const socketId = onlineUsers.get(participant);
-                    if (socketId) {
-                        io.to(socketId).emit("typingStopped", {
-                            conversationId,
-                            userId,
-                        });
-                    }
-                });
-        } catch (error) {
-            console.error("TYPING STOPPED ERROR:", error);
-        }
-    });
-
-    socket.on("disconnect", () => {
-        const userId = socket.data.userId;
-        if (!userId) return;
-
-        const currentSocketId = onlineUsers.get(userId);
-
-        if (currentSocketId === socket.id) {
-            onlineUsers.delete(userId);
-            io.emit("onlineUsers", Array.from(onlineUsers.keys()));
+            io.emit("onlineUsers", await getOnlineUsers());
             socket.broadcast.emit("userOffline", userId);
+        } catch (error) {
+            console.error("DISCONNECT ERROR:", error);
         }
     });
 }
