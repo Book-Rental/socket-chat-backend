@@ -86,6 +86,7 @@ export const getUserConversations = async (
 
         const conversations = await Conversation.find({
             _id: { $in: conversationIds },
+            messageCount: { $gt: 0 },
         })
             .sort({ updatedAt: -1 })
             .lean();
@@ -196,5 +197,74 @@ export const markAsRead = async (
     } catch (error) {
         console.error("MARK AS READ ERROR:", error);
         res.status(500).json({ message: "Failed to mark messages as read" });
+    }
+};
+
+export const searchConversationsByText = async (
+    req: Request,
+    res: Response
+): Promise<void> => {
+    try {
+        const { userId, q } = req.query as { userId?: string; q?: string };
+
+        if (!userId || !q || !q.trim()) {
+            res.json({ results: [] });
+            return;
+        }
+
+        const participants = await ConversationParticipant.find({
+            userId,
+            leftAt: { $exists: false },
+        })
+            .select("conversationId")
+            .lean();
+
+        const conversationIds = participants.map((p) => p.conversationId);
+
+        if (conversationIds.length === 0) {
+            res.json({ results: [] });
+            return;
+        }
+
+        const matches = await Message.aggregate([
+            {
+                $match: {
+                    conversationId: { $in: conversationIds },
+                    "content.text": { $regex: q.trim(), $options: "i" },
+                },
+            },
+            { $sort: { createdAt: -1 } },
+            {
+                $group: {
+                    _id: "$conversationId",
+                    matchedText: { $first: "$content.text" },
+                },
+            },
+        ]);
+
+        if (matches.length === 0) {
+            res.json({ results: [] });
+            return;
+        }
+
+        const matchedTextMap = new Map(matches.map((m) => [m._id.toString(), m.matchedText]));
+
+        const conversations = await Conversation.find({
+            _id: { $in: matches.map((m) => m._id) },
+            type: "private",
+        })
+            .select("participants")
+            .lean();
+
+        const results = conversations.map((c) => ({
+            conversationId: c._id.toString(),
+            otherUserId: c.participants.find((p) => p !== userId),
+            matchedText: matchedTextMap.get(c._id.toString()) ?? "",
+        }));
+
+        res.json({ results });
+    } catch (error) {
+        console.error("SEARCH CONVERSATIONS ERROR:", error);
+        res.status(500).json({ message: "Failed to search conversations" });
     }
 };
