@@ -6,7 +6,9 @@ import {
 import {
     sendMessageService, editMessageService, deleteMessageService,
     markMessageDeliveredService, markMessagesReadService,
-    deliverPendingMessages
+    deliverPendingMessages, forwardMessageService,
+    forwardMessagesService,
+    deleteMessagesService
 } from "../services/message.service";
 import { Conversation } from "../models/Conversation";
 import { ConversationParticipant } from "../models/ConversationParticipant";
@@ -31,6 +33,8 @@ const toMessagePayload = (message: any): MessagePayload => ({
     clientMessageId: message.clientMessageId,
     replyTo: message.replyTo?.toString(),
     status: message.status,
+    forwarded: message.forwarded ?? false,
+    forwardCount: message.forwardCount ?? 0,
     editedAt: message.editedAt?.toISOString(),
     deletedAt: message.deletedAt?.toISOString(),
     createdAt: message.createdAt.toISOString(),
@@ -146,7 +150,86 @@ export function registerOneToOneHandlers(io: IOServer, socket: IOSocket): void {
             );
         }
     });
+    socket.on("forwardMessage", async data => {
+        try {
+            const senderId = socket.data.userId;
 
+            if (!senderId) {
+                return socket.emit(
+                    "errorMessage",
+                    "User is not registered"
+                );
+            }
+
+            const result = await forwardMessageService(
+                senderId,
+                data.messageId,
+                data.conversationId,
+                data.clientMessageId
+            );
+
+            const payload = toMessagePayload(result.message);
+
+            // Send the new forwarded message back to sender
+            socket.emit("messageSent", payload);
+
+            if (result.duplicate) {
+                return;
+            }
+
+            // Notify sender about delivery for private chat
+            if (
+                result.initialStatus === "delivered" &&
+                result.recipientId
+            ) {
+                socket.emit("messageDelivered", {
+                    conversationId:
+                        result.conversation._id.toString(),
+
+                    messageId:
+                        result.message._id.toString(),
+
+                    userId: result.recipientId,
+
+                    status: "delivered",
+                });
+            }
+
+            // Update conversation list
+            const c = result.conversation;
+
+            io.emit("conversationUpdated", {
+                id: c._id.toString(),
+                type: c.type,
+                name: c.name,
+                description: c.description,
+                createdBy: c.createdBy,
+                participants: c.participants,
+                lastMessageId:
+                    c.lastMessageId?.toString(),
+                lastMessageAt:
+                    c.lastMessageAt?.toISOString(),
+                messageCount: c.messageCount,
+                createdAt:
+                    c.createdAt?.toISOString(),
+                updatedAt:
+                    c.updatedAt?.toISOString(),
+            });
+
+        } catch (error) {
+            console.error(
+                "FORWARD MESSAGE ERROR:",
+                error
+            );
+
+            socket.emit(
+                "errorMessage",
+                error instanceof Error
+                    ? error.message
+                    : "Failed to forward message"
+            );
+        }
+    });
     socket.on("editMessage", async ({ messageId, text }) => {
         try {
             const userId = socket.data.userId;
@@ -292,4 +375,236 @@ export function registerOneToOneHandlers(io: IOServer, socket: IOSocket): void {
             console.error("DISCONNECT ERROR:", error);
         }
     });
+
+    socket.on("forwardMessages", async data => {
+        try {
+            const senderId = socket.data.userId;
+
+            if (!senderId) {
+                return socket.emit(
+                    "errorMessage",
+                    "User is not registered"
+                );
+            }
+
+            const {
+                messageIds,
+                conversationId,
+                clientMessageId,
+            } = data;
+
+            if (
+                !Array.isArray(messageIds) ||
+                messageIds.length === 0
+            ) {
+                return socket.emit(
+                    "errorMessage",
+                    "No messages selected"
+                );
+            }
+
+            if (!conversationId) {
+                return socket.emit(
+                    "errorMessage",
+                    "Target conversation is required"
+                );
+            }
+
+            const results = await forwardMessagesService(
+                senderId,
+                messageIds,
+                conversationId,
+                clientMessageId
+            );
+
+            if (results.length === 0) {
+                return socket.emit(
+                    "errorMessage",
+                    "Failed to forward messages"
+                );
+            }
+
+            /*
+             * Send every newly created forwarded message
+             * back to the sender.
+             */
+            for (const result of results) {
+                const payload = toMessagePayload(result.message);
+
+                socket.emit("messageSent", payload);
+
+                /*
+                 * Private conversation delivery status
+                 */
+                if (
+                    result.initialStatus === "delivered" &&
+                    result.recipientId
+                ) {
+                    socket.emit("messageDelivered", {
+                        conversationId:
+                            result.conversation._id.toString(),
+
+                        messageId:
+                            result.message._id.toString(),
+
+                        userId: result.recipientId,
+
+                        status: "delivered",
+                    });
+                }
+
+                /*
+                 * Update conversation list
+                 */
+                const c = result.conversation;
+
+                io.emit("conversationUpdated", {
+                    id: c._id.toString(),
+                    type: c.type,
+                    name: c.name,
+                    description: c.description,
+                    createdBy: c.createdBy,
+                    participants: c.participants,
+                    lastMessageId:
+                        c.lastMessageId?.toString(),
+                    lastMessageAt:
+                        c.lastMessageAt?.toISOString(),
+                    messageCount: c.messageCount,
+                    createdAt:
+                        c.createdAt?.toISOString(),
+                    updatedAt:
+                        c.updatedAt?.toISOString(),
+                });
+            }
+
+        } catch (error) {
+            console.error(
+                "MULTIPLE FORWARD ERROR:",
+                error
+            );
+
+            socket.emit(
+                "errorMessage",
+                error instanceof Error
+                    ? error.message
+                    : "Failed to forward messages"
+            );
+        }
+    });
+
+    socket.on(
+        "deleteMessages",
+        async ({
+            messageIds,
+            forEveryone,
+        }: {
+            messageIds: string[];
+            forEveryone: boolean;
+        }) => {
+            try {
+                const userId = socket.data.userId;
+
+                if (!userId) {
+                    return socket.emit(
+                        "errorMessage",
+                        "User is not registered"
+                    );
+                }
+
+                if (
+                    !Array.isArray(messageIds) ||
+                    messageIds.length === 0
+                ) {
+                    return socket.emit(
+                        "errorMessage",
+                        "No messages selected"
+                    );
+                }
+
+                const results = await deleteMessagesService(
+                    userId,
+                    messageIds,
+                    forEveryone
+                );
+
+                if (results.length === 0) {
+                    return socket.emit(
+                        "errorMessage",
+                        "No messages were deleted"
+                    );
+                }
+
+                /*
+                 * Delete for me:
+                 * Only the current user's view is updated.
+                 */
+                if (!forEveryone) {
+                    for (const result of results) {
+                        socket.emit("messageDeleted", {
+                            messageId:
+                                result.message._id.toString(),
+
+                            conversationId:
+                                result.message.conversationId.toString(),
+
+                            deletedAt:
+                                result.deletedAt.toISOString(),
+
+                            forEveryone: false,
+                        });
+                    }
+
+                    return;
+                }
+
+                /*
+                 * Delete for everyone:
+                 * Notify every participant.
+                 */
+                for (const result of results) {
+                    const payload = {
+                        messageId:
+                            result.message._id.toString(),
+
+                        conversationId:
+                            result.message.conversationId.toString(),
+
+                        deletedAt:
+                            result.deletedAt.toISOString(),
+
+                        forEveryone: true,
+                    };
+
+                    if (!result.conversation) {
+                        continue;
+                    }
+
+                    for (const participantId of result.conversation.participants) {
+                        const socketId =
+                            await getOnlineUser(participantId);
+
+                        if (socketId) {
+                            io.to(socketId).emit(
+                                "messageDeleted",
+                                payload
+                            );
+                        }
+                    }
+                }
+
+            } catch (error) {
+                console.error(
+                    "MULTIPLE DELETE ERROR:",
+                    error
+                );
+
+                socket.emit(
+                    "errorMessage",
+                    error instanceof Error
+                        ? error.message
+                        : "Failed to delete messages"
+                );
+            }
+        }
+    );
 }
