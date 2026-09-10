@@ -69,6 +69,7 @@ export interface IMessage extends Document {
     reactions: IReaction[];
     starredBy: string[];
     forwarded: boolean;
+    forwardCount: number;
 
     // per-recipient delivery / read receipts (WhatsApp double/blue tick, also works for groups)
     deliveredTo: string[];
@@ -186,7 +187,11 @@ const messageSchema = new Schema<IMessage>(
             type: Boolean,
             default: false,
         },
-
+        forwardCount: {
+            type: Number,
+            default: 0,
+            min: 0,
+        },
         deliveredTo: {
             type: [String],
             default: [],

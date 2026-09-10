@@ -12,6 +12,8 @@ export interface MessagePayload {
     clientMessageId?: string;
     replyTo?: string;
     status: MessageStatus;
+    forwarded?: boolean;
+    forwardCount?: number;
     editedAt?: string;
     deletedAt?: string;
     createdAt: string;
@@ -58,12 +60,25 @@ export interface ClientToServerEvents {
     }) => void;
 
     editMessage: (data: { messageId: string; text: string }) => void;
+    forwardMessage: (data: {
+        messageId: string;
+        conversationId: string;
+        clientMessageId: string;
+    }) => void;
+    forwardMessages: (data: {
+        messageIds: string[];
+        conversationId: string;
+        clientMessageId: string;
+    }) => void;
 
     deleteMessage: (data: {
         messageId: string;
         forEveryone?: boolean;
     }) => void;
-
+    deleteMessages: (data: {
+        messageIds: string[];
+        forEveryone: boolean;
+    }) => void;
     reactToMessage: (data: { messageId: string; emoji: string }) => void;
 
     messageDelivered: (data: { conversationId: string; messageId: string }) => void;
