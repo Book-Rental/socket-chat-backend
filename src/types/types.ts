@@ -10,7 +10,7 @@ export interface MessagePayload {
     type: MessageType;
     content?: IMessageContent;
     clientMessageId?: string;
-    replyTo?: string;
+    replyTo?: ReplyToPayload;
     status: MessageStatus;
     forwarded?: boolean;
     forwardCount?: number;
@@ -158,4 +158,12 @@ export interface InterServerEvents { }
 
 export interface SocketData {
     userId?: string;
+}
+
+export interface ReplyToPayload {
+    messageId: string;
+    senderId: string;
+    text?: string;
+    type?: MessageType;
+    fileName?: string;
 }

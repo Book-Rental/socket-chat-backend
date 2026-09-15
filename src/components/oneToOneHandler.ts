@@ -13,10 +13,10 @@ import {
 import { Conversation } from "../models/Conversation";
 import { ConversationParticipant } from "../models/ConversationParticipant";
 import { Message } from "../models/Message";
-import {
-    setOnlineUser, getOnlineUser, removeOnlineUser, getOnlineUsers
-} from "../store";
+import { setOnlineUser, getOnlineUser, removeOnlineUser, getOnlineUsers} from "../store";
 import { messageSubClient } from "../config/redis";
+import { toMessagePayload } from "../utils/messagePayload.util";
+
 
 type IOServer = Server<ClientToServerEvents, ServerToClientEvents, InterServerEvents, SocketData>;
 type IOSocket = Socket<ClientToServerEvents, ServerToClientEvents, InterServerEvents, SocketData>;
@@ -24,22 +24,22 @@ type IOSocket = Socket<ClientToServerEvents, ServerToClientEvents, InterServerEv
 const MESSAGE_CHANNEL = "chat:messages";
 let subscribed = false;
 
-const toMessagePayload = (message: any): MessagePayload => ({
-    id: message._id.toString(),
-    conversationId: message.conversationId.toString(),
-    senderId: message.senderId,
-    type: message.type,
-    content: message.content,
-    clientMessageId: message.clientMessageId,
-    replyTo: message.replyTo?.toString(),
-    status: message.status,
-    forwarded: message.forwarded ?? false,
-    forwardCount: message.forwardCount ?? 0,
-    editedAt: message.editedAt?.toISOString(),
-    deletedAt: message.deletedAt?.toISOString(),
-    createdAt: message.createdAt.toISOString(),
-    updatedAt: message.updatedAt.toISOString(),
-});
+// const toMessagePayload = (message: any): MessagePayload => ({
+//     id: message._id.toString(),
+//     conversationId: message.conversationId.toString(),
+//     senderId: message.senderId,
+//     type: message.type,
+//     content: message.content,
+//     clientMessageId: message.clientMessageId,
+//     replyTo: message.replyTo?.toString(),
+//     status: message.status,
+//     forwarded: message.forwarded ?? false,
+//     forwardCount: message.forwardCount ?? 0,
+//     editedAt: message.editedAt?.toISOString(),
+//     deletedAt: message.deletedAt?.toISOString(),
+//     createdAt: message.createdAt.toISOString(),
+//     updatedAt: message.updatedAt.toISOString(),
+// });
 
 async function subscribeToMessages(io: IOServer) {
     if (subscribed) return;
@@ -48,7 +48,9 @@ async function subscribeToMessages(io: IOServer) {
     await messageSubClient.subscribe(MESSAGE_CHANNEL, async rawMessage => {
         try {
             const { messageId, recipientIds } = JSON.parse(rawMessage);
-            const message = await Message.findById(messageId).lean();
+            const message = await Message.findById(messageId)
+                .populate("replyTo")   // <-- added
+                .lean();
             if (!message) return;
 
             const payload = toMessagePayload(message);
@@ -275,7 +277,21 @@ export function registerOneToOneHandlers(io: IOServer, socket: IOSocket): void {
 
             for (const participantId of result.conversation!.participants) {
                 const socketId = await getOnlineUser(participantId);
-                if (socketId) io.to(socketId).emit("messageDeleted", payload);
+                if (!socketId) continue;
+
+                io.to(socketId).emit("messageDeleted", payload);
+
+                if (participantId !== userId) {
+                    const participant = await ConversationParticipant.findOne({
+                        conversationId: result.message.conversationId,
+                        userId: participantId,
+                    }).lean();
+
+                    io.to(socketId).emit("unreadCountUpdated", {
+                        conversationId: result.message.conversationId.toString(),
+                        count: participant?.unreadCount ?? 0,
+                    });
+                }
             }
         } catch (error) {
             console.error("DELETE MESSAGE ERROR:", error);
