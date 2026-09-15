@@ -59,7 +59,7 @@ export async function sendMessageService(senderId: string, data: any) {
         const existingMessage = await Message.findOne({
             conversationId,
             clientMessageId,
-        });
+        }).populate("replyTo"); 
 
         if (existingMessage) {
             return {
@@ -100,6 +100,10 @@ export async function sendMessageService(senderId: string, data: any) {
                 ? [recipientId]
                 : [],
     });
+
+    if (replyTo) {
+        await message.populate("replyTo");   // <-- added
+    }
 
     conversation.lastMessageId = message._id;
     conversation.lastMessageAt = message.createdAt;
@@ -167,7 +171,7 @@ export async function editMessageService(
     const trimmedText = text?.trim();
     if (!trimmedText) throw new Error("Message content is required");
 
-    const message = await Message.findById(messageId);
+    const message = await Message.findById(messageId).populate("replyTo");
     if (!message) throw new Error("Message not found");
 
     if (message.senderId !== userId) {
@@ -211,6 +215,7 @@ export async function deleteMessageService(
     if (message.deletedAt) return null;
 
     const deletedAt = new Date();
+    const wasUnread = message.status !== "read";
 
     if (forEveryone) {
         message.deletedForEveryone = true;
@@ -239,6 +244,23 @@ export async function deleteMessageService(
     ).lean();
 
     if (!conversation) throw new Error("Conversation not found");
+
+    if (wasUnread) {
+        const recipients = conversation.participants.filter(
+            (p) => p !== message.senderId
+        );
+
+        for (const participantId of recipients) {
+            await ConversationParticipant.updateOne(
+                {
+                    conversationId: conversation._id,
+                    userId: participantId,
+                    unreadCount: { $gt: 0 },
+                },
+                { $inc: { unreadCount: -1 } }
+            );
+        }
+    }
 
     return {
         message,

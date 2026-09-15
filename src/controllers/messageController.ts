@@ -2,6 +2,7 @@ import { Request, Response } from "express";
 import { Message } from "../models/Message";
 import { Conversation } from "../models/Conversation";
 import { ConversationParticipant } from "../models/ConversationParticipant";
+import { toMessagePayload } from "../utils/messagePayload.util";
 
 const HISTORY_LIMIT = 50;
 
@@ -22,9 +23,10 @@ export const getConversationHistory = async (
         const messages = await Message.find({ conversationId })
             .sort({ createdAt: -1 })
             .limit(HISTORY_LIMIT)
+            .populate("replyTo") 
             .lean();
 
-        res.json({ messages: messages.reverse() });
+        res.json({ messages: messages.reverse().map(toMessagePayload) });   
     } catch (error) {
         console.error("GET CONVERSATION HISTORY ERROR:", error);
         res.status(500).json({ message: "Failed to fetch conversation history" });
