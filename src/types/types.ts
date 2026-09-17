@@ -5,6 +5,7 @@ export type ParticipantRole = "owner" | "admin" | "member";
 
 export interface MessagePayload {
     id: string;
+    tempId?: string;
     conversationId: string;
     senderId: string;
     type: MessageType;
@@ -37,27 +38,8 @@ export interface ConversationPayload {
 export interface ClientToServerEvents {
     registerUser: (userId: string) => void;
 
-    sendMessage: (data: {
-        conversationId: string;
-        clientMessageId: string;
-        type: MessageType;
-        // flat payload - the server builds the final `content` object
-        // via buildMessageContent(type, payload) based on `type`.
-        text?: string;
-        mediaUrl?: string;
-        mimeType?: string;
-        fileName?: string;
-        fileSize?: number;
-        duration?: number;
-        caption?: string;
-        thumbnailUrl?: string;
-        latitude?: number;
-        longitude?: number;
-        locationName?: string;
-        contactName?: string;
-        contactPhone?: string;
-        replyTo?: string;
-    }) => void;
+    sendMessage: (data: SendMessageData) => void;
+
 
     editMessage: (data: { messageId: string; text: string }) => void;
     forwardMessage: (data: {
@@ -166,4 +148,25 @@ export interface ReplyToPayload {
     text?: string;
     type?: MessageType;
     fileName?: string;
+}
+
+export interface SendMessageData {
+    conversationId: string;
+    clientMessageId: string;
+    tempId: string;
+    type: MessageType;
+    text?: string;
+    mediaUrl?: string;
+    mimeType?: string;
+    fileName?: string;
+    fileSize?: number;
+    duration?: number;
+    caption?: string;
+    thumbnailUrl?: string;
+    latitude?: number;
+    longitude?: number;
+    locationName?: string;
+    contactName?: string;
+    contactPhone?: string;
+    replyTo?: string;
 }

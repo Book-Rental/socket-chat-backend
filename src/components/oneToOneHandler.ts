@@ -13,137 +13,62 @@ import {
 import { Conversation } from "../models/Conversation";
 import { ConversationParticipant } from "../models/ConversationParticipant";
 import { Message } from "../models/Message";
-import { setOnlineUser, getOnlineUser, removeOnlineUser, getOnlineUsers} from "../store";
+import {
+    setOnlineUser, getOnlineUser, removeOnlineUser, getOnlineUsers
+} from "../store";
 import { messageSubClient } from "../config/redis";
 import { toMessagePayload } from "../utils/messagePayload.util";
-
 
 type IOServer = Server<ClientToServerEvents, ServerToClientEvents, InterServerEvents, SocketData>;
 type IOSocket = Socket<ClientToServerEvents, ServerToClientEvents, InterServerEvents, SocketData>;
 
 const MESSAGE_CHANNEL = "chat:messages";
-let subscribed = false;
+// IOServer = entire Socket.IO server (io)
+// IOSocket = one connected client (socket).
 
-// const toMessagePayload = (message: any): MessagePayload => ({
-//     id: message._id.toString(),
-//     conversationId: message.conversationId.toString(),
-//     senderId: message.senderId,
-//     type: message.type,
-//     content: message.content,
-//     clientMessageId: message.clientMessageId,
-//     replyTo: message.replyTo?.toString(),
-//     status: message.status,
-//     forwarded: message.forwarded ?? false,
-//     forwardCount: message.forwardCount ?? 0,
-//     editedAt: message.editedAt?.toISOString(),
-//     deletedAt: message.deletedAt?.toISOString(),
-//     createdAt: message.createdAt.toISOString(),
-//     updatedAt: message.updatedAt.toISOString(),
-// });
 
-async function subscribeToMessages(io: IOServer) {
-    if (subscribed) return;
-    subscribed = true;
-
-    await messageSubClient.subscribe(MESSAGE_CHANNEL, async rawMessage => {
-        try {
-            const { messageId, recipientIds } = JSON.parse(rawMessage);
-            const message = await Message.findById(messageId)
-                .populate("replyTo")   // <-- added
-                .lean();
-            if (!message) return;
-
-            const payload = toMessagePayload(message);
-
-            for (const participantId of recipientIds) {
-                const socketId = await getOnlineUser(participantId);
-                if (!socketId) continue;
-
-                io.to(socketId).emit("messageNew", payload);
-
-                const participant = await ConversationParticipant.findOne({
-                    conversationId: message.conversationId,
-                    userId: participantId,
-                }).lean();
-
-                io.to(socketId).emit("unreadCountUpdated", {
-                    conversationId: message.conversationId.toString(),
-                    count: participant?.unreadCount ?? 0,
-                });
-            }
-        } catch (error) {
-            console.error("REDIS MESSAGE ERROR:", error);
-        }
-    });
-}
 
 export function registerOneToOneHandlers(io: IOServer, socket: IOSocket): void {
-    subscribeToMessages(io).catch(error =>
-        console.error("REDIS SUBSCRIBE ERROR:", error)
-    );
-
     socket.on("registerUser", async userId => {
         try {
-            const trimmedUserId = userId.trim();
-            if (!trimmedUserId)
-                return socket.emit("errorMessage", "Invalid username");
-
-            const previousUserId = socket.data.userId;
-
-            if (previousUserId && previousUserId !== trimmedUserId) {
-                const previousSocketId = await getOnlineUser(previousUserId);
-                if (previousSocketId === socket.id)
-                    await removeOnlineUser(previousUserId, socket.id);
+            if (socket.data.userId) {
+                return;
             }
-
+            const trimmedUserId = userId.trim();
+            if (!trimmedUserId) {
+                return socket.emit("errorMessage", "Invalid username");
+            }
             socket.data.userId = trimmedUserId;
             await setOnlineUser(trimmedUserId, socket.id);
 
             io.emit("onlineUsers", await getOnlineUsers());
-            socket.broadcast.emit("userOnline", trimmedUserId);
 
             await deliverPendingMessages(io, trimmedUserId);
+
         } catch (error) {
             console.error("REGISTER USER ERROR:", error);
         }
     });
 
-    socket.on("sendMessage", async data => {
+    socket.on("sendMessage", async (data) => {
         try {
             const senderId = socket.data.userId;
-            if (!senderId)
+
+            if (!senderId) {
                 return socket.emit("errorMessage", "User is not registered");
-
-            const result = await sendMessageService(senderId, data);
-            const payload = toMessagePayload(result.message);
-
-            socket.emit("messageSent", payload);
-            if (result.duplicate) return;
-
-            if (result.initialStatus === "delivered" && result.recipientId) {
-                socket.emit("messageDelivered", {
-                    conversationId: result.conversation._id.toString(),
-                    messageId: result.message._id.toString(),
-                    userId: result.recipientId,
-                    status: "delivered",
-                });
             }
 
-            const c = result.conversation;
+            const result = await sendMessageService(senderId, data);
 
-            io.emit("conversationUpdated", {
-                id: c._id.toString(),
-                type: c.type,
-                name: c.name,
-                description: c.description,
-                createdBy: c.createdBy,
-                participants: c.participants,
-                lastMessageId: c.lastMessageId?.toString(),
-                lastMessageAt: c.lastMessageAt?.toISOString(),
-                messageCount: c.messageCount,
-                createdAt: c.createdAt?.toISOString(),
-                updatedAt: c.updatedAt?.toISOString(),
-            });
+            if (result.duplicate || !result.messagePayload) {
+                return;
+            }
+
+            const allParticipants = [senderId, ...result.messagePayload.recipientIds];
+
+            for (const participantId of allParticipants) {
+                io.to(`user:${participantId}`).emit("messageSent", result.messagePayload);
+            }
         } catch (error) {
             console.error("SEND MESSAGE ERROR:", error);
             socket.emit(
@@ -277,21 +202,7 @@ export function registerOneToOneHandlers(io: IOServer, socket: IOSocket): void {
 
             for (const participantId of result.conversation!.participants) {
                 const socketId = await getOnlineUser(participantId);
-                if (!socketId) continue;
-
-                io.to(socketId).emit("messageDeleted", payload);
-
-                if (participantId !== userId) {
-                    const participant = await ConversationParticipant.findOne({
-                        conversationId: result.message.conversationId,
-                        userId: participantId,
-                    }).lean();
-
-                    io.to(socketId).emit("unreadCountUpdated", {
-                        conversationId: result.message.conversationId.toString(),
-                        count: participant?.unreadCount ?? 0,
-                    });
-                }
+                if (socketId) io.to(socketId).emit("messageDeleted", payload);
             }
         } catch (error) {
             console.error("DELETE MESSAGE ERROR:", error);

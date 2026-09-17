@@ -78,7 +78,7 @@ export interface IMessage extends Document {
     // "delete for me" vs "delete for everyone"
     deletedFor: string[];
     deletedForEveryone: boolean;
-
+    tempId?: string; // temporary ID used for optimistic UI updates on the client side
     editedAt?: Date;
     deletedAt?: Date;
     createdAt: Date;
@@ -182,7 +182,12 @@ const messageSchema = new Schema<IMessage>(
             type: [String],
             default: [],
         },
+        tempId: {
+            type: String,
+            trim: true,
+            index: true,
 
+        },
         forwarded: {
             type: Boolean,
             default: false,
@@ -228,5 +233,5 @@ const messageSchema = new Schema<IMessage>(
 
 messageSchema.index({ conversationId: 1, createdAt: -1 });
 messageSchema.index({ conversationId: 1, clientMessageId: 1 });
-
+messageSchema.index({ conversationId: 1, tempId: 1 });
 export const Message = mongoose.model<IMessage>("Message", messageSchema);

@@ -13,6 +13,9 @@ import {
     ServerToClientEvents,
     InterServerEvents,
     SocketData,
+    MessagePayload,
+    SendMessageData,
+    ReplyToPayload,
 } from "../types/types";
 
 type IOServer = Server<
@@ -22,19 +25,33 @@ type IOServer = Server<
     SocketData
 >;
 import { getOnlineUser } from "../store";
+import { findMessageByIdOrTempId } from "../utils/findMessageByIdOrTempId";
+import mongoose from "mongoose";
 
 const MESSAGE_CHANNEL = "chat:messages";
 
-export async function sendMessageService(senderId: string, data: any) {
+export async function sendMessageService(
+    senderId: string,
+    data: SendMessageData
+) {
+    console.log("sendMessageService called with data:", data);
+
     const {
         conversationId,
         clientMessageId,
         type = "text",
         replyTo,
+        tempId,
         ...contentFields
     } = data;
 
-    if (!conversationId) throw new Error("Conversation ID is required");
+    if (!conversationId) {
+        throw new Error("Conversation ID is required");
+    }
+
+    if (!tempId) {
+        throw new Error("tempId is required");
+    }
 
     const builtContent = buildMessageContent(type, contentFields);
 
@@ -43,126 +60,94 @@ export async function sendMessageService(senderId: string, data: any) {
     }
 
     const conversation = await Conversation.findById(conversationId);
-    if (!conversation) throw new Error("Conversation not found");
+
+    if (!conversation) {
+        throw new Error("Conversation not found");
+    }
 
     if (!conversation.participants.includes(senderId)) {
         throw new Error("You are not a participant in this conversation");
     }
 
-    const otherParticipants = conversation.participants.filter(
-        participant => participant !== senderId
+    const recipientIds = conversation.participants.filter(
+        (participant) => participant !== senderId
     );
-
-    const recipientId = otherParticipants[0];
 
     if (clientMessageId) {
         const existingMessage = await Message.findOne({
             conversationId,
             clientMessageId,
-        }).populate("replyTo"); 
+        });
 
         if (existingMessage) {
             return {
-                message: existingMessage,
                 duplicate: true,
-                recipientId: undefined,
-                otherParticipants,
-                initialStatus: existingMessage.status,
-                conversation,
-                getParticipant: async (participantId: string) =>
-                    ConversationParticipant.findOne({
-                        conversationId: conversation._id,
-                        userId: participantId,
-                    }).lean(),
+                messageId: existingMessage._id.toString(),
             };
         }
     }
 
-    const recipientSocketId = recipientId
-        ? await getOnlineUser(recipientId)
-        : undefined;
+    const now = new Date().toISOString();
 
-    const initialStatus =
-        conversation.type === "private" && recipientSocketId
-            ? "delivered"
-            : "sent";
+    let replyToPayload: ReplyToPayload | undefined;
 
-    const message = await Message.create({
+    if (replyTo) {
+        const repliedMessage = await findMessageByIdOrTempId(replyTo);
+
+        if (!repliedMessage) {
+            throw new Error("Replied message not found");
+        }
+
+        replyToPayload = {
+            messageId: repliedMessage._id.toString(),
+            senderId: repliedMessage.senderId,
+            text:
+                repliedMessage.content?.type === "text" ||
+                    repliedMessage.content?.type === "emoji"
+                    ? repliedMessage.content.text
+                    : undefined,
+            type: repliedMessage.type,
+            fileName: repliedMessage.content?.fileName,
+        };
+    }
+
+    const messagePayload: MessagePayload & {
+        recipientIds: string[];
+    } = {
+        id: tempId,
+        tempId,
         conversationId,
         senderId,
         type,
         content: builtContent,
         clientMessageId,
-        replyTo,
-        status: initialStatus,
-        deliveredTo:
-            initialStatus === "delivered" && recipientId
-                ? [recipientId]
-                : [],
-    });
+        replyTo: replyToPayload,
+        status: "sent",
+        forwarded: false,
+        forwardCount: 0,
+        createdAt: now,
+        updatedAt: now,
+        recipientIds,
+    };
 
-    if (replyTo) {
-        await message.populate("replyTo");   // <-- added
-    }
-
-    conversation.lastMessageId = message._id;
-    conversation.lastMessageAt = message.createdAt;
-    conversation.messageCount += 1;
-    await conversation.save();
-
-    for (const participantId of otherParticipants) {
-        await ConversationParticipant.updateOne(
-            {
-                conversationId: conversation._id,
-                userId: participantId,
-                leftAt: { $exists: false },
-            },
-            { $inc: { unreadCount: 1 } }
-        );
-
-        if (
-            initialStatus === "delivered" &&
-            participantId === recipientId
-        ) {
-            await ConversationParticipant.updateOne(
-                {
-                    conversationId: conversation._id,
-                    userId: participantId,
-                },
-                {
-                    $set: {
-                        lastDeliveredMessageId: message._id,
-                        lastDeliveredAt: new Date(),
-                    },
-                }
-            );
-        }
-    }
-
-    // Redis Pub/Sub
     await pubClient.publish(
         MESSAGE_CHANNEL,
         JSON.stringify({
-            messageId: message._id.toString(),
-            recipientIds: otherParticipants,
+            tempId,
+            conversationId,
+            senderId,
+            type,
+            content: builtContent,
+            clientMessageId,
+            replyTo: replyToPayload?.messageId,
         })
     );
 
     return {
-        message,
         duplicate: false,
-        recipientId,
-        otherParticipants,
-        initialStatus,
-        conversation,
-        getParticipant: async (participantId: string) =>
-            ConversationParticipant.findOne({
-                conversationId: conversation._id,
-                userId: participantId,
-            }).lean(),
+        messagePayload,
     };
 }
-
 export async function editMessageService(
     userId: string,
     messageId: string,
@@ -171,8 +156,11 @@ export async function editMessageService(
     const trimmedText = text?.trim();
     if (!trimmedText) throw new Error("Message content is required");
 
-    const message = await Message.findById(messageId).populate("replyTo");
-    if (!message) throw new Error("Message not found");
+    const message = await findMessageByIdOrTempId(messageId);
+
+    if (!message) {
+        throw new Error("Message not found");
+    }
 
     if (message.senderId !== userId) {
         throw new Error("You can only edit your own message");
@@ -205,7 +193,7 @@ export async function deleteMessageService(
     messageId: string,
     forEveryone: boolean
 ) {
-    const message = await Message.findById(messageId);
+    const message = await findMessageByIdOrTempId(messageId);
     if (!message) throw new Error("Message not found");
 
     if (message.senderId !== userId) {
@@ -286,7 +274,7 @@ export async function markMessageDeliveredService(
     participant.lastDeliveredAt = new Date();
     await participant.save();
 
-    const message = await Message.findById(messageId);
+    const message = await findMessageByIdOrTempId(messageId);
     if (!message) return null;
 
     if (!message.deliveredTo?.includes(userId)) {
@@ -316,7 +304,7 @@ export async function markMessagesReadService(
 
     if (!participant) return null;
 
-    const upToMessage = await Message.findById(messageId).lean();
+    const upToMessage = await findMessageByIdOrTempId(messageId);
     if (!upToMessage) return null;
 
     participant.lastReadMessageId = messageId as any;
@@ -421,8 +409,8 @@ export async function forwardMessageService(
     }
 
     // 1. Find original message
-    const originalMessage = await Message.findById(messageId).lean();
-
+    const originalMessage =
+        await findMessageByIdOrTempId(messageId);
     if (!originalMessage) {
         throw new Error("Original message not found");
     }
