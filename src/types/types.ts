@@ -4,8 +4,8 @@ export type ConversationType = "private" | "group" | "broadcast" | "room";
 export type ParticipantRole = "owner" | "admin" | "member";
 
 export interface MessagePayload {
-    id: string;
-    tempId?: string;
+    id?: string;
+    tempId: string;
     conversationId: string;
     senderId: string;
     type: MessageType;
@@ -170,3 +170,4 @@ export interface SendMessageData {
     contactPhone?: string;
     replyTo?: string;
 }
+

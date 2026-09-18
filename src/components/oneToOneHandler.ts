@@ -63,10 +63,18 @@ export function registerOneToOneHandlers(io: IOServer, socket: IOSocket): void {
             if (result.duplicate || !result.messagePayload) {
                 return;
             }
-
+            console.log("Message sent:", result.messagePayload);
             const allParticipants = [senderId, ...result.messagePayload.recipientIds];
 
             for (const participantId of allParticipants) {
+                console.log(
+                    "EMITTING messageSent TO:",
+                    participantId,
+                    "ROOM:",
+                    `user:${participantId}`,
+                    "MESSAGE:",
+                    result.messagePayload.tempId
+                );
                 io.to(`user:${participantId}`).emit("messageSent", result.messagePayload);
             }
         } catch (error) {
