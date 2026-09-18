@@ -114,7 +114,6 @@ export async function sendMessageService(
     const messagePayload: MessagePayload & {
         recipientIds: string[];
     } = {
-        id: tempId,
         tempId,
         conversationId,
         senderId,

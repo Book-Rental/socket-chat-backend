@@ -185,6 +185,7 @@ const messageSchema = new Schema<IMessage>(
         tempId: {
             type: String,
             trim: true,
+            unique: true,
             index: true,
 
         },

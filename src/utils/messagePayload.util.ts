@@ -15,6 +15,7 @@ function buildReplyToPayload(replyToDoc: any): ReplyToPayload | undefined {
 
 export const toMessagePayload = (message: any): MessagePayload => ({
     id: message._id.toString(),
+    tempId: message.tempId,
     conversationId: message.conversationId.toString(),
     senderId: message.senderId,
     type: message.type,

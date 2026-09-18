@@ -22,9 +22,19 @@ export const startMessageSubscriber = async (): Promise<void> => {
                     );
                 }
 
-                const savedMessage = await Message.create(
-                    messageData
-                );
+                const existingMessage = await Message.findOne({
+                    tempId: messageData.tempId,
+                });
+
+                if (existingMessage) {
+                    console.log(
+                        "Duplicate message ignored:",
+                        messageData.tempId
+                    );
+                    return;
+                }
+
+                const savedMessage = await Message.create(messageData);
 
                 console.log(
                     "Message saved:",
