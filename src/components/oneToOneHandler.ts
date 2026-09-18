@@ -42,7 +42,7 @@ export function registerOneToOneHandlers(io: IOServer, socket: IOSocket): void {
             await setOnlineUser(trimmedUserId, socket.id);
 
             io.emit("onlineUsers", await getOnlineUsers());
-
+            socket.broadcast.emit("userOnline", trimmedUserId);
             await deliverPendingMessages(io, trimmedUserId);
 
         } catch (error) {
@@ -64,18 +64,22 @@ export function registerOneToOneHandlers(io: IOServer, socket: IOSocket): void {
                 return;
             }
             console.log("Message sent:", result.messagePayload);
-            const allParticipants = [senderId, ...result.messagePayload.recipientIds];
+            const allParticipants = [
+                senderId,
+                ...result.recipientIds,
+            ];
 
             for (const participantId of allParticipants) {
-                console.log(
-                    "EMITTING messageSent TO:",
-                    participantId,
-                    "ROOM:",
-                    `user:${participantId}`,
-                    "MESSAGE:",
-                    result.messagePayload.tempId
+                const socketId = await getOnlineUser(participantId);
+
+                if (!socketId) {
+                    console.log(`User ${participantId} is offline, skipping messageSent event`);
+                    continue;
+                }
+                io.to(socketId).emit(
+                    "messageSent",
+                    result.messagePayload
                 );
-                io.to(`user:${participantId}`).emit("messageSent", result.messagePayload);
             }
         } catch (error) {
             console.error("SEND MESSAGE ERROR:", error);
