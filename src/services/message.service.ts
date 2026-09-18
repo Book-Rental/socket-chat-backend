@@ -111,9 +111,7 @@ export async function sendMessageService(
         };
     }
 
-    const messagePayload: MessagePayload & {
-        recipientIds: string[];
-    } = {
+    const messagePayload: MessagePayload = {
         tempId,
         conversationId,
         senderId,
@@ -126,7 +124,6 @@ export async function sendMessageService(
         forwardCount: 0,
         createdAt: now,
         updatedAt: now,
-        recipientIds,
     };
 
     await pubClient.publish(
@@ -135,17 +132,25 @@ export async function sendMessageService(
             tempId,
             conversationId,
             senderId,
+            recipientIds,
             type,
             content: builtContent,
             clientMessageId,
             replyTo: replyToPayload?.messageId,
+            status: "sent",
+            forwarded: false,
+            forwardCount: 0,
+            createdAt: now,
+            updatedAt: now,
         })
     );
 
     return {
         duplicate: false,
         messagePayload,
-    };
+        recipientIds,
+
+    }
 }
 export async function editMessageService(
     userId: string,
