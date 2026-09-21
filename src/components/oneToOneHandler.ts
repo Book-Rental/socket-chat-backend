@@ -81,6 +81,22 @@ export function registerOneToOneHandlers(io: IOServer, socket: IOSocket): void {
                     result.messagePayload
                 );
             }
+             // Notify clients that the conversation list has changed.
+            const conversation = result.conversation;
+
+            io.emit("conversationUpdated", {
+                id: conversation._id.toString(),
+                type: conversation.type,
+                name: conversation.name,
+                description: conversation.description,
+                createdBy: conversation.createdBy,
+                participants: conversation.participants,
+                lastMessageId: conversation.lastMessageId?.toString(),
+                lastMessageAt: conversation.lastMessageAt?.toISOString(),
+                messageCount: conversation.messageCount,
+                createdAt: conversation.createdAt?.toISOString(),
+                updatedAt: conversation.updatedAt?.toISOString(),
+            });
         } catch (error) {
             console.error("SEND MESSAGE ERROR:", error);
             socket.emit(

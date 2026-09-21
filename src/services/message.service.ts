@@ -149,7 +149,7 @@ export async function sendMessageService(
         duplicate: false,
         messagePayload,
         recipientIds,
-
+        conversation,
     }
 }
 export async function editMessageService(
