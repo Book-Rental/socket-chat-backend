@@ -27,6 +27,7 @@ type IOServer = Server<
 import { getOnlineUser } from "../store";
 import { findMessageByIdOrTempId } from "../utils/findMessageByIdOrTempId";
 import mongoose from "mongoose";
+import { toMessagePayload } from "../utils/messagePayload.util";
 
 const MESSAGE_CHANNEL = "chat:messages";
 
@@ -125,6 +126,7 @@ export async function sendMessageService(
         createdAt: now,
         updatedAt: now,
     };
+    console.log("PUBLISHING tempId:", tempId);
 
     await pubClient.publish(
         MESSAGE_CHANNEL,
@@ -262,38 +264,16 @@ export async function deleteMessageService(
     };
 }
 
-export async function markMessageDeliveredService(
-    userId: string,
-    conversationId: string,
-    messageId: string
-) {
-    const participant = await ConversationParticipant.findOne({
-        conversationId,
-        userId,
-    });
-
+export async function markMessageDeliveredService(userId: string, conversationId: string, messageId: string) {
+    const participant = await ConversationParticipant.findOne({ conversationId, userId, });
     if (!participant) return null;
-
-    participant.lastDeliveredMessageId = messageId as any;
-    participant.lastDeliveredAt = new Date();
-    await participant.save();
-
     const message = await findMessageByIdOrTempId(messageId);
     if (!message) return null;
-
-    if (!message.deliveredTo?.includes(userId)) {
-        message.deliveredTo = [
-            ...(message.deliveredTo ?? []),
-            userId,
-        ];
-    }
-
-    if (message.status === "sent") {
-        message.status = "delivered";
-    }
-
-    await message.save();
-    return message;
+    participant.lastDeliveredMessageId = message._id;
+    participant.lastDeliveredAt = new Date();
+    await participant.save();
+    if (!message.deliveredTo?.includes(userId)) { message.deliveredTo = [...(message.deliveredTo ?? []), userId,]; }
+    if (message.status === "sent") { message.status = "delivered"; } await message.save(); return message;
 }
 
 export async function markMessagesReadService(
@@ -311,7 +291,7 @@ export async function markMessagesReadService(
     const upToMessage = await findMessageByIdOrTempId(messageId);
     if (!upToMessage) return null;
 
-    participant.lastReadMessageId = messageId as any;
+    participant.lastReadMessageId = upToMessage._id;
     participant.lastReadAt = new Date();
     participant.unreadCount = 0;
     await participant.save();
@@ -412,35 +392,26 @@ export async function forwardMessageService(
         throw new Error("Target conversation ID is required");
     }
 
-    // 1. Find original message
-    const originalMessage =
-        await findMessageByIdOrTempId(messageId);
+    const originalMessage = await findMessageByIdOrTempId(messageId);
     if (!originalMessage) {
         throw new Error("Original message not found");
     }
 
-    // 2. Do not allow forwarding deleted messages
     if (originalMessage.deletedAt || originalMessage.deletedForEveryone) {
         throw new Error("Deleted message cannot be forwarded");
     }
 
-    // 3. Find target conversation
-    const conversation = await Conversation.findById(
-        targetConversationId
-    );
-
+    const conversation = await Conversation.findById(targetConversationId);
     if (!conversation) {
         throw new Error("Target conversation not found");
     }
 
-    // 4. Sender must belong to target conversation
     if (!conversation.participants.includes(senderId)) {
-        throw new Error(
-            "You are not a participant in the target conversation"
-        );
+        throw new Error("You are not a participant in the target conversation");
     }
 
-    // 5. Prevent duplicate forwarding
+    const recipientIds = conversation.participants.filter(p => p !== senderId);
+
     if (clientMessageId) {
         const existingMessage = await Message.findOne({
             conversationId: targetConversationId,
@@ -449,125 +420,39 @@ export async function forwardMessageService(
 
         if (existingMessage) {
             return {
-                message: existingMessage,
+                messageData: toMessagePayload(existingMessage),
                 conversation,
                 duplicate: true,
-                recipientIds: conversation.participants.filter(
-                    participant => participant !== senderId
-                ),
-                initialStatus: existingMessage.status,
+                recipientIds,
             };
         }
     }
 
-    // 6. Find recipients
-    const recipientIds = conversation.participants.filter(
-        participant => participant !== senderId
-    );
+    const tempId = crypto.randomUUID();
+    const now = new Date().toISOString();
 
-    // 7. For private chat, check recipient online status
-    const recipientId =
-        conversation.type === "private"
-            ? recipientIds[0]
-            : undefined;
-
-    const recipientSocketId = recipientId
-        ? await getOnlineUser(recipientId)
-        : undefined;
-
-    const initialStatus =
-        conversation.type === "private" && recipientSocketId
-            ? "delivered"
-            : "sent";
-
-    // 8. Create NEW message
-    const forwardedMessage = await Message.create({
-        conversationId: conversation._id,
+    const messageData = {
+        tempId,
+        conversationId: conversation._id.toString(),
         senderId,
-
+        recipientIds,
         type: originalMessage.type,
         content: originalMessage.content,
-
         clientMessageId,
-
-        status: initialStatus,
-
+        status: "sent" as const,
         forwarded: true,
-
         forwardCount: (originalMessage.forwardCount ?? 0) + 1,
+        createdAt: now,
+        updatedAt: now,
+    };
 
-        deliveredTo:
-            initialStatus === "delivered" && recipientId
-                ? [recipientId]
-                : [],
-
-        readBy: [],
-        reactions: [],
-        starredBy: [],
-        deletedFor: [],
-        deletedForEveryone: false,
-    });
-
-    // 9. Update conversation
-    conversation.lastMessageId = forwardedMessage._id;
-    conversation.lastMessageAt = forwardedMessage.createdAt;
-    conversation.messageCount += 1;
-
-    await conversation.save();
-
-    // 10. Increase unread count for recipients
-    for (const participantId of recipientIds) {
-        await ConversationParticipant.updateOne(
-            {
-                conversationId: conversation._id,
-                userId: participantId,
-                leftAt: { $exists: false },
-            },
-            {
-                $inc: {
-                    unreadCount: 1,
-                },
-            }
-        );
-
-        // 11. Update delivered information
-        if (
-            initialStatus === "delivered" &&
-            participantId === recipientId
-        ) {
-            await ConversationParticipant.updateOne(
-                {
-                    conversationId: conversation._id,
-                    userId: participantId,
-                },
-                {
-                    $set: {
-                        lastDeliveredMessageId:
-                            forwardedMessage._id,
-                        lastDeliveredAt: new Date(),
-                    },
-                }
-            );
-        }
-    }
-
-    // 12. Publish through Redis
-    await pubClient.publish(
-        MESSAGE_CHANNEL,
-        JSON.stringify({
-            messageId: forwardedMessage._id.toString(),
-            recipientIds,
-        })
-    );
-
+    await pubClient.publish(MESSAGE_CHANNEL, JSON.stringify(messageData));
 
     return {
-        message: forwardedMessage,
+        messageData,
         conversation,
         duplicate: false,
         recipientIds,
-        recipientId,
-        initialStatus,
     };
 }
 export async function forwardMessagesService(
