@@ -34,17 +34,34 @@ export function registerOneToOneHandlers(io: IOServer, socket: IOSocket): void {
             if (socket.data.userId) {
                 return;
             }
+
             const trimmedUserId = userId.trim();
+
             if (!trimmedUserId) {
                 return socket.emit("errorMessage", "Invalid username");
             }
+
             socket.data.userId = trimmedUserId;
+
             await setOnlineUser(trimmedUserId, socket.id);
 
-            io.emit("onlineUsers", await getOnlineUsers());
-            socket.broadcast.emit("userOnline", trimmedUserId);
-            await deliverPendingMessages(io, trimmedUserId);
+            console.log(
+                "User registered:",
+                trimmedUserId,
+                "Socket:",
+                socket.id
+            );
 
+            console.log(
+                "Online socket:",
+                await getOnlineUser(trimmedUserId)
+            );
+
+            io.emit("onlineUsers", await getOnlineUsers());
+
+            socket.broadcast.emit("userOnline", trimmedUserId);
+
+            await deliverPendingMessages(io, trimmedUserId);
         } catch (error) {
             console.error("REGISTER USER ERROR:", error);
         }
@@ -81,7 +98,7 @@ export function registerOneToOneHandlers(io: IOServer, socket: IOSocket): void {
                     result.messagePayload
                 );
             }
-             // Notify clients that the conversation list has changed.
+            // Notify clients that the conversation list has changed.
             const conversation = result.conversation;
 
             io.emit("conversationUpdated", {
@@ -105,15 +122,12 @@ export function registerOneToOneHandlers(io: IOServer, socket: IOSocket): void {
             );
         }
     });
-    socket.on("forwardMessage", async data => {
+    socket.on("forwardMessage", async (data) => {
         try {
             const senderId = socket.data.userId;
 
             if (!senderId) {
-                return socket.emit(
-                    "errorMessage",
-                    "User is not registered"
-                );
+                return socket.emit("errorMessage", "User is not registered");
             }
 
             const result = await forwardMessageService(
@@ -123,34 +137,19 @@ export function registerOneToOneHandlers(io: IOServer, socket: IOSocket): void {
                 data.clientMessageId
             );
 
-            const payload = toMessagePayload(result.message);
-
-            // Send the new forwarded message back to sender
-            socket.emit("messageSent", payload);
-
             if (result.duplicate) {
-                return;
+                // still reconcile the sender's optimistic UI even on a dup
+                return socket.emit("messageSent", result.messageData);
             }
 
-            // Notify sender about delivery for private chat
-            if (
-                result.initialStatus === "delivered" &&
-                result.recipientId
-            ) {
-                socket.emit("messageDelivered", {
-                    conversationId:
-                        result.conversation._id.toString(),
+            const allParticipants = [senderId, ...result.recipientIds];
 
-                    messageId:
-                        result.message._id.toString(),
-
-                    userId: result.recipientId,
-
-                    status: "delivered",
-                });
+            for (const participantId of allParticipants) {
+                const socketId = await getOnlineUser(participantId);
+                if (!socketId) continue;
+                io.to(socketId).emit("messageSent", result.messageData);
             }
 
-            // Update conversation list
             const c = result.conversation;
 
             io.emit("conversationUpdated", {
@@ -160,28 +159,18 @@ export function registerOneToOneHandlers(io: IOServer, socket: IOSocket): void {
                 description: c.description,
                 createdBy: c.createdBy,
                 participants: c.participants,
-                lastMessageId:
-                    c.lastMessageId?.toString(),
-                lastMessageAt:
-                    c.lastMessageAt?.toISOString(),
+                lastMessageId: c.lastMessageId?.toString(),
+                lastMessageAt: c.lastMessageAt?.toISOString(),
                 messageCount: c.messageCount,
-                createdAt:
-                    c.createdAt?.toISOString(),
-                updatedAt:
-                    c.updatedAt?.toISOString(),
+                createdAt: c.createdAt?.toISOString(),
+                updatedAt: c.updatedAt?.toISOString(),
             });
 
         } catch (error) {
-            console.error(
-                "FORWARD MESSAGE ERROR:",
-                error
-            );
-
+            console.error("FORWARD MESSAGE ERROR:", error);
             socket.emit(
                 "errorMessage",
-                error instanceof Error
-                    ? error.message
-                    : "Failed to forward message"
+                error instanceof Error ? error.message : "Failed to forward message"
             );
         }
     });
@@ -331,38 +320,22 @@ export function registerOneToOneHandlers(io: IOServer, socket: IOSocket): void {
         }
     });
 
-    socket.on("forwardMessages", async data => {
+    socket.on("forwardMessages", async (data) => {
         try {
             const senderId = socket.data.userId;
 
             if (!senderId) {
-                return socket.emit(
-                    "errorMessage",
-                    "User is not registered"
-                );
+                return socket.emit("errorMessage", "User is not registered");
             }
 
-            const {
-                messageIds,
-                conversationId,
-                clientMessageId,
-            } = data;
+            const { messageIds, conversationId, clientMessageId } = data;
 
-            if (
-                !Array.isArray(messageIds) ||
-                messageIds.length === 0
-            ) {
-                return socket.emit(
-                    "errorMessage",
-                    "No messages selected"
-                );
+            if (!Array.isArray(messageIds) || messageIds.length === 0) {
+                return socket.emit("errorMessage", "No messages selected");
             }
 
             if (!conversationId) {
-                return socket.emit(
-                    "errorMessage",
-                    "Target conversation is required"
-                );
+                return socket.emit("errorMessage", "Target conversation is required");
             }
 
             const results = await forwardMessagesService(
@@ -373,45 +346,25 @@ export function registerOneToOneHandlers(io: IOServer, socket: IOSocket): void {
             );
 
             if (results.length === 0) {
-                return socket.emit(
-                    "errorMessage",
-                    "Failed to forward messages"
-                );
+                return socket.emit("errorMessage", "Failed to forward messages");
             }
 
-            /*
-             * Send every newly created forwarded message
-             * back to the sender.
-             */
             for (const result of results) {
-                const payload = toMessagePayload(result.message);
+                const { messageData, conversation, duplicate, recipientIds } = result;
 
-                socket.emit("messageSent", payload);
+                const allParticipants = [senderId, ...recipientIds];
 
-                /*
-                 * Private conversation delivery status
-                 */
-                if (
-                    result.initialStatus === "delivered" &&
-                    result.recipientId
-                ) {
-                    socket.emit("messageDelivered", {
-                        conversationId:
-                            result.conversation._id.toString(),
-
-                        messageId:
-                            result.message._id.toString(),
-
-                        userId: result.recipientId,
-
-                        status: "delivered",
-                    });
+                for (const participantId of allParticipants) {
+                    const socketId = await getOnlineUser(participantId);
+                    if (!socketId) continue;
+                    io.to(socketId).emit("messageSent", messageData);
                 }
 
-                /*
-                 * Update conversation list
-                 */
-                const c = result.conversation;
+                if (duplicate) {
+                    continue;
+                }
+
+                const c = conversation;
 
                 io.emit("conversationUpdated", {
                     id: c._id.toString(),
@@ -420,29 +373,19 @@ export function registerOneToOneHandlers(io: IOServer, socket: IOSocket): void {
                     description: c.description,
                     createdBy: c.createdBy,
                     participants: c.participants,
-                    lastMessageId:
-                        c.lastMessageId?.toString(),
-                    lastMessageAt:
-                        c.lastMessageAt?.toISOString(),
+                    lastMessageId: c.lastMessageId?.toString(),
+                    lastMessageAt: c.lastMessageAt?.toISOString(),
                     messageCount: c.messageCount,
-                    createdAt:
-                        c.createdAt?.toISOString(),
-                    updatedAt:
-                        c.updatedAt?.toISOString(),
+                    createdAt: c.createdAt?.toISOString(),
+                    updatedAt: c.updatedAt?.toISOString(),
                 });
             }
 
         } catch (error) {
-            console.error(
-                "MULTIPLE FORWARD ERROR:",
-                error
-            );
-
+            console.error("MULTIPLE FORWARD ERROR:", error);
             socket.emit(
                 "errorMessage",
-                error instanceof Error
-                    ? error.message
-                    : "Failed to forward messages"
+                error instanceof Error ? error.message : "Failed to forward messages"
             );
         }
     });

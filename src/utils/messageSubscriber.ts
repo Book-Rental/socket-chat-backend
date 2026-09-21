@@ -24,41 +24,50 @@ export const startMessageSubscriber = async (): Promise<void> => {
                     );
                 }
 
-                const savedMessage = await Message.create(
-                    messageData
-                );
-
-                // Update conversation metadata after saving the message.
-                // messageCount is used by getUserConversations() to determine
-                // whether a conversation should be displayed in the sidebar.
-
-                await Conversation.findByIdAndUpdate(
-                    messageData.conversationId,
+                const savedMessage = await Message.findOneAndUpdate(
+                    { tempId: messageData.tempId },
+                    { $setOnInsert: messageData },
                     {
-                        $set: {
-                            lastMessageId: savedMessage._id,
-                            lastMessageAt: savedMessage.createdAt,
-                        },
-                        $inc: {
-                            messageCount: 1,
-                        },
+                        returnDocument: "after",
+                        upsert: true,
+                        timestamps: false,
                     }
                 );
 
-                // Increase unread count for recipients
-                for (const recipientId of messageData.recipientIds) {
-                    await ConversationParticipant.updateOne(
+                // Update conversation metadata only when
+                // the message was newly inserted.
+                if (savedMessage) {
+                    await Conversation.findByIdAndUpdate(
+                        messageData.conversationId,
                         {
-                            conversationId: messageData.conversationId,
-                            userId: recipientId,
-                            leftAt: { $exists: false },
-                        },
-                        {
+                            $set: {
+                                lastMessageId: savedMessage._id,
+                                lastMessageAt: savedMessage.createdAt,
+                            },
                             $inc: {
-                                unreadCount: 1,
+                                messageCount: 1,
                             },
                         }
                     );
+
+                    // Increase unread count for recipients
+                    for (const recipientId of messageData.recipientIds) {
+                        await ConversationParticipant.updateOne(
+                            {
+                                conversationId:
+                                    messageData.conversationId,
+                                userId: recipientId,
+                                leftAt: {
+                                    $exists: false,
+                                },
+                            },
+                            {
+                                $inc: {
+                                    unreadCount: 1,
+                                },
+                            }
+                        );
+                    }
                 }
 
                 console.log(

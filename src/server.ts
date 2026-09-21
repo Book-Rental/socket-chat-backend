@@ -19,10 +19,13 @@ import { registerOneToOneHandlers } from "./components/oneToOneHandler";
 import { connectDatabase } from "./config/database";
 
 import {
+    adapterSubClient,
     connectRedis,
+    pubClient,
 } from "./config/redis";
 import uploadRoutes from "./routes/uploadRoutes";
 import { startMessageSubscriber } from "./utils/messageSubscriber";
+import { createAdapter } from "@socket.io/redis-adapter";
 
 const allowedOrigins = [
     "http://localhost:5173",
@@ -55,6 +58,7 @@ const io: IOServer = new Server(server, {
 });
 
 
+io.adapter(createAdapter(pubClient, adapterSubClient));
 app.get("/", (_req, res) => {
     res.json({
         message: "Socket.IO server is running",
