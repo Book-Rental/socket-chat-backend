@@ -26,7 +26,7 @@ type IOServer = Server<
 >;
 import { getOnlineUser } from "../store";
 import { findMessageByIdOrTempId } from "../utils/findMessageByIdOrTempId";
-import mongoose from "mongoose";
+import crypto from "crypto";
 import { toMessagePayload } from "../utils/messagePayload.util";
 
 const MESSAGE_CHANNEL = "chat:messages";
@@ -131,6 +131,7 @@ export async function sendMessageService(
     await pubClient.publish(
         MESSAGE_CHANNEL,
         JSON.stringify({
+            action: "create",
             tempId,
             conversationId,
             senderId,
@@ -163,35 +164,29 @@ export async function editMessageService(
     if (!trimmedText) throw new Error("Message content is required");
 
     const message = await findMessageByIdOrTempId(messageId);
+    if (!message) throw new Error("Message not found");
+    if (message.senderId !== userId) throw new Error("You can only edit your own message");
+    if (message.deletedAt) throw new Error("Deleted message cannot be edited");
 
-    if (!message) {
-        throw new Error("Message not found");
-    }
+    const conversation = await Conversation.findById(message.conversationId).lean();
+    if (!conversation) throw new Error("Conversation not found");
 
-    if (message.senderId !== userId) {
-        throw new Error("You can only edit your own message");
-    }
-
-    if (message.deletedAt) {
-        throw new Error("Deleted message cannot be edited");
-    }
-
+    // Mutate in-memory only — NOT saved here. The subscriber persists it.
     message.content = {
         ...message.content,
         type: isEmojiOnly(trimmedText) ? "emoji" : "text",
         text: trimmedText,
     };
-
     message.editedAt = new Date();
-    await message.save();
 
-    const conversation = await Conversation.findById(
-        message.conversationId
-    ).lean();
+    const messagePayload = toMessagePayload(message);
 
-    if (!conversation) throw new Error("Conversation not found");
+    await pubClient.publish(
+        MESSAGE_CHANNEL,
+        JSON.stringify({ action: "edit", message: messagePayload })
+    );
 
-    return { message, conversation };
+    return { messagePayload, conversation };
 }
 
 export async function deleteMessageService(
@@ -201,79 +196,71 @@ export async function deleteMessageService(
 ) {
     const message = await findMessageByIdOrTempId(messageId);
     if (!message) throw new Error("Message not found");
-
-    if (message.senderId !== userId) {
+    if (forEveryone && message.senderId !== userId) {
         throw new Error("You can only delete your own message");
     }
-
     if (message.deletedAt) return null;
 
     const deletedAt = new Date();
     const wasUnread = message.status !== "read";
 
-    if (forEveryone) {
-        message.deletedForEveryone = true;
-        message.deletedAt = deletedAt;
-        message.content = undefined;
-    } else {
-        message.deletedFor = [
-            ...(message.deletedFor ?? []),
-            userId,
-        ];
-    }
+    const conversation = forEveryone
+        ? await Conversation.findById(message.conversationId).lean()
+        : null;
 
-    await message.save();
+    if (forEveryone && !conversation) throw new Error("Conversation not found");
 
-    if (!forEveryone) {
-        return {
-            message,
-            conversation: null,
-            deletedAt,
-            forEveryone: false,
-        };
-    }
+    const recipients =
+        forEveryone && wasUnread
+            ? conversation!.participants.filter((p) => p !== message.senderId)
+            : [];
 
-    const conversation = await Conversation.findById(
-        message.conversationId
-    ).lean();
+    const payload = {
+        action: "delete" as const,
+        messageId: message._id.toString(),
+        conversationId: message.conversationId.toString(),
+        deletedAt: deletedAt.toISOString(),
+        tempId: message.tempId,        // NEW
+        forEveryone,
+        userId, // needed for "delete for me" — only that user's view changes
+        recipients, // needed so the subscriber can decrement unread counts
+    };
 
-    if (!conversation) throw new Error("Conversation not found");
-
-    if (wasUnread) {
-        const recipients = conversation.participants.filter(
-            (p) => p !== message.senderId
-        );
-
-        for (const participantId of recipients) {
-            await ConversationParticipant.updateOne(
-                {
-                    conversationId: conversation._id,
-                    userId: participantId,
-                    unreadCount: { $gt: 0 },
-                },
-                { $inc: { unreadCount: -1 } }
-            );
-        }
-    }
+    await pubClient.publish(MESSAGE_CHANNEL, JSON.stringify(payload));
 
     return {
-        message,
-        conversation,
+        messageId: payload.messageId,
+        conversationId: payload.conversationId,
         deletedAt,
-        forEveryone: true,
+        forEveryone,
+        userId,
+        tempId: message.tempId,        // NEW
+        conversation, // null for "delete for me"
     };
 }
-
-export async function markMessageDeliveredService(userId: string, conversationId: string, messageId: string) {
-    const participant = await ConversationParticipant.findOne({ conversationId, userId, });
+export async function markMessageDeliveredService(
+    userId: string,
+    conversationId: string,
+    messageId: string
+) {
+    const participant = await ConversationParticipant.findOne({ conversationId, userId });
     if (!participant) return null;
+
     const message = await findMessageByIdOrTempId(messageId);
     if (!message) return null;
-    participant.lastDeliveredMessageId = message._id;
-    participant.lastDeliveredAt = new Date();
-    await participant.save();
-    if (!message.deliveredTo?.includes(userId)) { message.deliveredTo = [...(message.deliveredTo ?? []), userId,]; }
-    if (message.status === "sent") { message.status = "delivered"; } await message.save(); return message;
+
+    const payload = {
+        action: "delivered" as const,
+        conversationId,
+        messageId: message._id.toString(),
+        userId,
+        tempId: message.tempId,
+        senderId: message.senderId,
+    };
+
+    await pubClient.publish(MESSAGE_CHANNEL, JSON.stringify(payload));
+
+    return payload;
 }
 
 export async function markMessagesReadService(
@@ -281,38 +268,25 @@ export async function markMessagesReadService(
     conversationId: string,
     messageId: string
 ) {
-    const participant = await ConversationParticipant.findOne({
-        conversationId,
-        userId,
-    });
-
+    const participant = await ConversationParticipant.findOne({ conversationId, userId });
     if (!participant) return null;
 
     const upToMessage = await findMessageByIdOrTempId(messageId);
     if (!upToMessage) return null;
 
-    participant.lastReadMessageId = upToMessage._id;
-    participant.lastReadAt = new Date();
-    participant.unreadCount = 0;
-    await participant.save();
+    const payload = {
+        action: "read" as const,
+        conversationId,
+        messageId: upToMessage._id.toString(),
+        userId,
+        tempId: upToMessage.tempId,
+        senderId: upToMessage.senderId,
+        upToCreatedAt: upToMessage.createdAt.toISOString(),
+    };
 
-    await Message.updateMany(
-        {
-            conversationId,
-            senderId: { $ne: userId },
-            createdAt: { $lte: upToMessage.createdAt },
-            status: { $ne: "read" },
-        },
-        {
-            $set: { status: "read" },
-            $addToSet: {
-                readBy: userId,
-                deliveredTo: userId,
-            },
-        }
-    );
+    await pubClient.publish(MESSAGE_CHANNEL, JSON.stringify(payload));
 
-    return upToMessage;
+    return payload;
 }
 
 export async function deliverPendingMessages(
@@ -417,7 +391,7 @@ export async function forwardMessageService(
             conversationId: targetConversationId,
             clientMessageId,
         });
-
+        console.log(existingMessage, "existingMessage in forwardMessageService");
         if (existingMessage) {
             return {
                 messageData: toMessagePayload(existingMessage),
@@ -432,6 +406,7 @@ export async function forwardMessageService(
     const now = new Date().toISOString();
 
     const messageData = {
+        action: "create",
         tempId,
         conversationId: conversation._id.toString(),
         senderId,
@@ -514,20 +489,10 @@ export async function deleteMessagesService(
 
     for (const messageId of messageIds) {
         try {
-            const result = await deleteMessageService(
-                userId,
-                messageId,
-                forEveryone
-            );
-
-            if (result) {
-                results.push(result);
-            }
+            const result = await deleteMessageService(userId, messageId, forEveryone);
+            if (result) results.push(result);
         } catch (error) {
-            console.error(
-                `Failed to delete message ${messageId}:`,
-                error
-            );
+            console.error(`Failed to delete message ${messageId}:`, error);
         }
     }
 
