@@ -177,45 +177,38 @@ export function registerOneToOneHandlers(io: IOServer, socket: IOSocket): void {
     socket.on("editMessage", async ({ messageId, text }) => {
         try {
             const userId = socket.data.userId;
-            if (!userId)
-                return socket.emit("errorMessage", "User is not registered");
+            if (!userId) return socket.emit("errorMessage", "User is not registered");
 
-            const result = await editMessageService(userId, messageId, text);
-            const payload = toMessagePayload(result.message);
+            const { messagePayload, conversation } = await editMessageService(userId, messageId, text);
 
-            for (const participantId of result.conversation.participants) {
+            for (const participantId of conversation.participants) {
                 const socketId = await getOnlineUser(participantId);
-                if (socketId) io.to(socketId).emit("messageEdited", payload);
+                if (socketId) io.to(socketId).emit("messageEdited", messagePayload);
             }
         } catch (error) {
             console.error("EDIT MESSAGE ERROR:", error);
-            socket.emit(
-                "errorMessage",
-                error instanceof Error ? error.message : "Failed to edit message"
-            );
+            socket.emit("errorMessage", error instanceof Error ? error.message : "Failed to edit message");
         }
     });
 
     socket.on("deleteMessage", async ({ messageId, forEveryone }) => {
         try {
             const userId = socket.data.userId;
-            if (!userId)
-                return socket.emit("errorMessage", "User is not registered");
+            if (!userId) return socket.emit("errorMessage", "User is not registered");
 
-            const result = await deleteMessageService(
-                userId, messageId, forEveryone ?? false
-            );
+            const result = await deleteMessageService(userId, messageId, forEveryone ?? false);
             if (!result) return;
 
             const payload = {
-                messageId: result.message._id.toString(),
-                conversationId: result.message.conversationId.toString(),
+                messageId: result.messageId,
+                conversationId: result.conversationId,
                 deletedAt: result.deletedAt.toISOString(),
                 forEveryone: result.forEveryone,
+                tempId: result.tempId,          // NEW
+                userId,
             };
 
-            if (!result.forEveryone)
-                return socket.emit("messageDeleted", payload);
+            if (!result.forEveryone) return socket.emit("messageDeleted", payload);
 
             for (const participantId of result.conversation!.participants) {
                 const socketId = await getOnlineUser(participantId);
@@ -223,10 +216,7 @@ export function registerOneToOneHandlers(io: IOServer, socket: IOSocket): void {
             }
         } catch (error) {
             console.error("DELETE MESSAGE ERROR:", error);
-            socket.emit(
-                "errorMessage",
-                error instanceof Error ? error.message : "Failed to delete message"
-            );
+            socket.emit("errorMessage", error instanceof Error ? error.message : "Failed to delete message");
         }
     });
 
@@ -235,15 +225,17 @@ export function registerOneToOneHandlers(io: IOServer, socket: IOSocket): void {
             const userId = socket.data.userId;
             if (!userId) return;
 
-            const message = await markMessageDeliveredService(
+            const payload = await markMessageDeliveredService(
                 userId, conversationId, messageId
             );
-            if (!message) return;
+            if (!payload) return;
 
-            const senderSocketId = await getOnlineUser(message.senderId);
+            const senderSocketId = await getOnlineUser(payload.senderId);
             if (senderSocketId)
                 io.to(senderSocketId).emit("messageDelivered", {
-                    conversationId, messageId, userId, status: "delivered",
+                    conversationId, messageId: payload.messageId, userId,
+                    tempId: payload.tempId,
+                    status: "delivered",
                 });
         } catch (error) {
             console.error("MESSAGE DELIVERED ERROR:", error);
@@ -255,15 +247,17 @@ export function registerOneToOneHandlers(io: IOServer, socket: IOSocket): void {
             const userId = socket.data.userId;
             if (!userId) return;
 
-            const message = await markMessagesReadService(
+            const payload = await markMessagesReadService(
                 userId, conversationId, messageId
             );
-            if (!message) return;
+            if (!payload) return;
 
-            const senderSocketId = await getOnlineUser(message.senderId);
+            const senderSocketId = await getOnlineUser(payload.senderId);
             if (senderSocketId)
                 io.to(senderSocketId).emit("messageRead", {
-                    conversationId, messageId, userId, status: "read",
+                    conversationId, messageId: payload.messageId, tempId: payload.tempId,
+                    userId, status: "read",
+                    upToCreatedAt: payload.upToCreatedAt,
                 });
 
             socket.emit("unreadCountUpdated", {
@@ -390,119 +384,54 @@ export function registerOneToOneHandlers(io: IOServer, socket: IOSocket): void {
         }
     });
 
-    socket.on(
-        "deleteMessages",
-        async ({
-            messageIds,
-            forEveryone,
-        }: {
-            messageIds: string[];
-            forEveryone: boolean;
-        }) => {
-            try {
-                const userId = socket.data.userId;
+    socket.on("deleteMessages", async ({ messageIds, forEveryone }: { messageIds: string[]; forEveryone: boolean }) => {
+        try {
+            const userId = socket.data.userId;
+            if (!userId) return socket.emit("errorMessage", "User is not registered");
 
-                if (!userId) {
-                    return socket.emit(
-                        "errorMessage",
-                        "User is not registered"
-                    );
-                }
-
-                if (
-                    !Array.isArray(messageIds) ||
-                    messageIds.length === 0
-                ) {
-                    return socket.emit(
-                        "errorMessage",
-                        "No messages selected"
-                    );
-                }
-
-                const results = await deleteMessagesService(
-                    userId,
-                    messageIds,
-                    forEveryone
-                );
-
-                if (results.length === 0) {
-                    return socket.emit(
-                        "errorMessage",
-                        "No messages were deleted"
-                    );
-                }
-
-                /*
-                 * Delete for me:
-                 * Only the current user's view is updated.
-                 */
-                if (!forEveryone) {
-                    for (const result of results) {
-                        socket.emit("messageDeleted", {
-                            messageId:
-                                result.message._id.toString(),
-
-                            conversationId:
-                                result.message.conversationId.toString(),
-
-                            deletedAt:
-                                result.deletedAt.toISOString(),
-
-                            forEveryone: false,
-                        });
-                    }
-
-                    return;
-                }
-
-                /*
-                 * Delete for everyone:
-                 * Notify every participant.
-                 */
-                for (const result of results) {
-                    const payload = {
-                        messageId:
-                            result.message._id.toString(),
-
-                        conversationId:
-                            result.message.conversationId.toString(),
-
-                        deletedAt:
-                            result.deletedAt.toISOString(),
-
-                        forEveryone: true,
-                    };
-
-                    if (!result.conversation) {
-                        continue;
-                    }
-
-                    for (const participantId of result.conversation.participants) {
-                        const socketId =
-                            await getOnlineUser(participantId);
-
-                        if (socketId) {
-                            io.to(socketId).emit(
-                                "messageDeleted",
-                                payload
-                            );
-                        }
-                    }
-                }
-
-            } catch (error) {
-                console.error(
-                    "MULTIPLE DELETE ERROR:",
-                    error
-                );
-
-                socket.emit(
-                    "errorMessage",
-                    error instanceof Error
-                        ? error.message
-                        : "Failed to delete messages"
-                );
+            if (!Array.isArray(messageIds) || messageIds.length === 0) {
+                return socket.emit("errorMessage", "No messages selected");
             }
+
+            const results = await deleteMessagesService(userId, messageIds, forEveryone);
+
+            if (results.length === 0) {
+                return socket.emit("errorMessage", "No messages were deleted");
+            }
+
+            if (!forEveryone) {
+                for (const result of results) {
+                    socket.emit("messageDeleted", {
+                        messageId: result.messageId,
+                        conversationId: result.conversationId,
+                        deletedAt: result.deletedAt.toISOString(),
+                        forEveryone: false,
+                        tempId: result.tempId,
+                    });
+                }
+                return;
+            }
+
+            for (const result of results) {
+                const payload = {
+                    messageId: result.messageId,
+                    conversationId: result.conversationId,
+                    deletedAt: result.deletedAt.toISOString(),
+                    forEveryone: true,
+                    userId: result.userId,
+                    tempId: result.tempId,
+                };
+
+                if (!result.conversation) continue;
+
+                for (const participantId of result.conversation.participants) {
+                    const socketId = await getOnlineUser(participantId);
+                    if (socketId) io.to(socketId).emit("messageDeleted", payload);
+                }
+            }
+        } catch (error) {
+            console.error("MULTIPLE DELETE ERROR:", error);
+            socket.emit("errorMessage", error instanceof Error ? error.message : "Failed to delete messages");
         }
-    );
+    });
 }

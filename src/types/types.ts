@@ -17,6 +17,8 @@ export interface MessagePayload {
     forwardCount?: number;
     editedAt?: string;
     deletedAt?: string;
+    deletedForEveryone?: boolean;
+    deletedForMe?: boolean;
     createdAt: string;
     updatedAt: string;
 }
@@ -39,7 +41,6 @@ export interface ClientToServerEvents {
     registerUser: (userId: string) => void;
 
     sendMessage: (data: SendMessageData) => void;
-
 
     editMessage: (data: { messageId: string; text: string }) => void;
     forwardMessage: (data: {
@@ -85,6 +86,7 @@ export interface ServerToClientEvents {
         conversationId: string;
         messageId: string;
         userId: string;
+        tempId?: string;
         status: MessageStatus;
     }) => void;
 
@@ -92,7 +94,9 @@ export interface ServerToClientEvents {
         conversationId: string;
         messageId: string;
         userId: string;
+        tempId?: string;
         status: MessageStatus;
+        upToCreatedAt?: string;
     }) => void;
 
     messageEdited: (message: MessagePayload) => void;
@@ -102,6 +106,7 @@ export interface ServerToClientEvents {
         conversationId: string;
         deletedAt: string;
         forEveryone: boolean;
+        tempId?: string;
     }) => void;
 
     messageReaction: (data: {
@@ -109,6 +114,7 @@ export interface ServerToClientEvents {
         conversationId: string;
         userId: string;
         emoji: string;
+        tempId?: string;
     }) => void;
 
     unreadCountUpdated: (data: { conversationId: string; count: number }) => void;
@@ -170,4 +176,3 @@ export interface SendMessageData {
     contactPhone?: string;
     replyTo?: string;
 }
-

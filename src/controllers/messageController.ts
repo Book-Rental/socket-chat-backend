@@ -6,12 +6,14 @@ import { toMessagePayload } from "../utils/messagePayload.util";
 
 const HISTORY_LIMIT = 50;
 
+// message.controller.ts
 export const getConversationHistory = async (
     req: Request,
     res: Response
 ): Promise<void> => {
     try {
         const { conversationId } = req.params;
+        const { userId } = req.query as { userId?: string };
 
         if (!conversationId) {
             res.status(400).json({ message: "Conversation ID is required" });
@@ -19,14 +21,17 @@ export const getConversationHistory = async (
         }
 
         // Deleted messages are intentionally still returned so the client
-        // can render "This message was deleted".
+        // can render "This message was deleted" — masking happens per
+        // viewer inside toMessagePayload, not by filtering rows out here.
         const messages = await Message.find({ conversationId })
             .sort({ createdAt: -1 })
             .limit(HISTORY_LIMIT)
-            .populate("replyTo") 
+            .populate("replyTo")
             .lean();
 
-        res.json({ messages: messages.reverse().map(toMessagePayload) });   
+        res.json({
+            messages: messages.reverse().map((m) => toMessagePayload(m, userId)),
+        });
     } catch (error) {
         console.error("GET CONVERSATION HISTORY ERROR:", error);
         res.status(500).json({ message: "Failed to fetch conversation history" });
