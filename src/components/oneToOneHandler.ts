@@ -434,4 +434,96 @@ export function registerOneToOneHandlers(io: IOServer, socket: IOSocket): void {
             socket.emit("errorMessage", error instanceof Error ? error.message : "Failed to delete messages");
         }
     });
+
+
+    socket.on("callUser", async ({ to, conversationId, offer, callType }) => {
+        try {
+            const fromUserId = socket.data.userId;
+            if (!fromUserId) return;
+
+            const targetSocketId = await getOnlineUser(to);
+
+            if (!targetSocketId) {
+                return socket.emit("callUserOffline", { to, conversationId });
+            }
+
+            io.to(targetSocketId).emit("incomingCall", {
+                from: fromUserId,
+                conversationId,
+                offer,
+                callType,
+            });
+        } catch (error) {
+            console.error("CALL USER ERROR:", error);
+        }
+    });
+
+    socket.on("answerCall", async ({ to, conversationId, answer }) => {
+        try {
+            const fromUserId = socket.data.userId;
+            if (!fromUserId) return;
+
+            const targetSocketId = await getOnlineUser(to);
+            if (!targetSocketId) return;
+
+            io.to(targetSocketId).emit("callAnswered", {
+                from: fromUserId,
+                conversationId,
+                answer,
+            });
+        } catch (error) {
+            console.error("ANSWER CALL ERROR:", error);
+        }
+    });
+
+    socket.on("iceCandidate", async ({ to, candidate }) => {
+        try {
+            const fromUserId = socket.data.userId;
+            if (!fromUserId) return;
+
+            const targetSocketId = await getOnlineUser(to);
+            if (!targetSocketId) return;
+
+            io.to(targetSocketId).emit("iceCandidateReceived", {
+                from: fromUserId,
+                candidate,
+            });
+        } catch (error) {
+            console.error("ICE CANDIDATE ERROR:", error);
+        }
+    });
+
+    socket.on("rejectCall", async ({ to, conversationId }) => {
+        try {
+            const fromUserId = socket.data.userId;
+            if (!fromUserId) return;
+
+            const targetSocketId = await getOnlineUser(to);
+            if (targetSocketId) {
+                io.to(targetSocketId).emit("callRejected", {
+                    from: fromUserId,
+                    conversationId,
+                });
+            }
+        } catch (error) {
+            console.error("REJECT CALL ERROR:", error);
+        }
+    });
+
+    socket.on("endCall", async ({ to, conversationId }) => {
+        try {
+            const fromUserId = socket.data.userId;
+            if (!fromUserId) return;
+
+            const targetSocketId = await getOnlineUser(to);
+            if (targetSocketId) {
+                io.to(targetSocketId).emit("callEnded", {
+                    from: fromUserId,
+                    conversationId,
+                });
+            }
+        } catch (error) {
+            console.error("END CALL ERROR:", error);
+        }
+    });
 }

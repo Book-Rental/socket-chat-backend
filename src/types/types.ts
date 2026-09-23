@@ -76,6 +76,30 @@ export interface ClientToServerEvents {
     joinRoom: (roomId: string) => void;
     leaveRoom: (roomId: string) => void;
     broadcastMessage: (content: IMessageContent) => void;
+
+
+
+    callUser: (data: {
+        to: string;
+        conversationId: string;
+        offer: RTCSessionDescriptionInit;
+        callType: "audio" | "video";
+    }) => void;
+
+    answerCall: (data: {
+        to: string;
+        conversationId: string;
+        answer: RTCSessionDescriptionInit;
+    }) => void;
+
+    iceCandidate: (data: {
+        to: string;
+        candidate: RTCIceCandidateInit;
+    }) => void;
+
+    rejectCall: (data: { to: string; conversationId: string }) => void;
+
+    endCall: (data: { to: string; conversationId: string }) => void;
 }
 
 export interface ServerToClientEvents {
@@ -140,6 +164,30 @@ export interface ServerToClientEvents {
     roomNotification: (message: string) => void;
 
     errorMessage: (message: string) => void;
+
+    incomingCall: (data: {
+        from: string;
+        conversationId: string;
+        offer: RTCSessionDescriptionInit;
+        callType: "audio" | "video";
+    }) => void;
+
+    callAnswered: (data: {
+        from: string;
+        conversationId: string;
+        answer: RTCSessionDescriptionInit;
+    }) => void;
+
+    iceCandidateReceived: (data: {
+        from: string;
+        candidate: RTCIceCandidateInit;
+    }) => void;
+
+    callRejected: (data: { from: string; conversationId: string }) => void;
+
+    callEnded: (data: { from: string; conversationId: string }) => void;
+
+    callUserOffline: (data: { to: string; conversationId: string }) => void;
 }
 
 export interface InterServerEvents { }
