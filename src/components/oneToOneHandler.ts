@@ -436,7 +436,7 @@ export function registerOneToOneHandlers(io: IOServer, socket: IOSocket): void {
     });
 
 
-    socket.on("callUser", async ({ to, conversationId, offer, callType }) => {
+    socket.on("callUser", async ({ to, conversationId, offer, callType, callId }) => {
         try {
             const fromUserId = socket.data.userId;
             if (!fromUserId) return;
@@ -452,13 +452,14 @@ export function registerOneToOneHandlers(io: IOServer, socket: IOSocket): void {
                 conversationId,
                 offer,
                 callType,
+                callId,
             });
         } catch (error) {
             console.error("CALL USER ERROR:", error);
         }
     });
 
-    socket.on("answerCall", async ({ to, conversationId, answer }) => {
+    socket.on("answerCall", async ({ to, conversationId, answer, callId }) => {
         try {
             const fromUserId = socket.data.userId;
             if (!fromUserId) return;
@@ -470,13 +471,14 @@ export function registerOneToOneHandlers(io: IOServer, socket: IOSocket): void {
                 from: fromUserId,
                 conversationId,
                 answer,
+                callId,
             });
         } catch (error) {
             console.error("ANSWER CALL ERROR:", error);
         }
     });
 
-    socket.on("iceCandidate", async ({ to, candidate }) => {
+    socket.on("iceCandidate", async ({ to, candidate, callId }) => {
         try {
             const fromUserId = socket.data.userId;
             if (!fromUserId) return;
@@ -487,6 +489,7 @@ export function registerOneToOneHandlers(io: IOServer, socket: IOSocket): void {
             io.to(targetSocketId).emit("iceCandidateReceived", {
                 from: fromUserId,
                 candidate,
+                callId,
             });
         } catch (error) {
             console.error("ICE CANDIDATE ERROR:", error);

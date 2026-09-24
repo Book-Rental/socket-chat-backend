@@ -78,28 +78,30 @@ export interface ClientToServerEvents {
     broadcastMessage: (content: IMessageContent) => void;
 
 
-
     callUser: (data: {
         to: string;
         conversationId: string;
         offer: RTCSessionDescriptionInit;
         callType: "audio" | "video";
+        callId: string;   // NEW
     }) => void;
 
     answerCall: (data: {
         to: string;
         conversationId: string;
         answer: RTCSessionDescriptionInit;
+        callId: string;   // NEW
     }) => void;
 
     iceCandidate: (data: {
         to: string;
         candidate: RTCIceCandidateInit;
+        callId: string;   // NEW
     }) => void;
 
-    rejectCall: (data: { to: string; conversationId: string }) => void;
+    rejectCall: (data: { to: string; conversationId: string; }) => void;
 
-    endCall: (data: { to: string; conversationId: string }) => void;
+    endCall: (data: { to: string; conversationId: string; }) => void;
 }
 
 export interface ServerToClientEvents {
@@ -170,19 +172,21 @@ export interface ServerToClientEvents {
         conversationId: string;
         offer: RTCSessionDescriptionInit;
         callType: "audio" | "video";
+        callId: string;   // NEW
     }) => void;
 
     callAnswered: (data: {
         from: string;
         conversationId: string;
         answer: RTCSessionDescriptionInit;
+        callId: string;   // NEW
     }) => void;
 
     iceCandidateReceived: (data: {
         from: string;
         candidate: RTCIceCandidateInit;
+        callId: string;   // NEW
     }) => void;
-
     callRejected: (data: { from: string; conversationId: string }) => void;
 
     callEnded: (data: { from: string; conversationId: string }) => void;
