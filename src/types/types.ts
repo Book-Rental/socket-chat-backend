@@ -99,9 +99,9 @@ export interface ClientToServerEvents {
         callId: string;   // NEW
     }) => void;
 
-    rejectCall: (data: { to: string; conversationId: string; }) => void;
+    rejectCall: (data: { to: string; conversationId: string; callId: string }) => void;
 
-    endCall: (data: { to: string; conversationId: string; }) => void;
+    endCall: (data: { to: string; conversationId: string; callId: string }) => void;
 }
 
 export interface ServerToClientEvents {
@@ -172,26 +172,30 @@ export interface ServerToClientEvents {
         conversationId: string;
         offer: RTCSessionDescriptionInit;
         callType: "audio" | "video";
-        callId: string;   // NEW
+        callId: string;
     }) => void;
 
     callAnswered: (data: {
         from: string;
         conversationId: string;
         answer: RTCSessionDescriptionInit;
-        callId: string;   // NEW
+        callId: string;
     }) => void;
 
     iceCandidateReceived: (data: {
         from: string;
         candidate: RTCIceCandidateInit;
-        callId: string;   // NEW
+        callId: string;
     }) => void;
-    callRejected: (data: { from: string; conversationId: string }) => void;
+    callRejected: (data: { from: string; conversationId: string; callId: string }) => void;
 
-    callEnded: (data: { from: string; conversationId: string }) => void;
+    callEnded: (data: { from: string; conversationId: string; callId: string }) => void;
 
     callUserOffline: (data: { to: string; conversationId: string }) => void;
+    callBusy: (data: {
+        userId: string;
+        message: string;
+    }) => void;
 }
 
 export interface InterServerEvents { }

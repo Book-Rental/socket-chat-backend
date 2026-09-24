@@ -435,7 +435,57 @@ export function registerOneToOneHandlers(io: IOServer, socket: IOSocket): void {
         }
     });
 
+    const activeCalls = new Map<string, {
+        callId: string;
+        remoteUserId: string;
+    }>();
 
+    socket.on("callUser", async ({ to, conversationId, offer, callType, callId }) => {
+        try {
+            const fromUserId = socket.data.userId;
+            if (!fromUserId) return;
+
+            if (activeCalls.has(fromUserId)) {
+                return socket.emit("callBusy", {
+                    userId: to,
+                    message: "You are already in a call.",
+                });
+            }
+
+            if (activeCalls.has(to)) {
+                return socket.emit("callBusy", {
+                    userId: to,
+                    message: "User is already in another call.",
+                });
+            }
+
+            const targetSocketId = await getOnlineUser(to);
+
+            if (!targetSocketId) {
+                return socket.emit("callUserOffline", { to, conversationId });
+            }
+
+            activeCalls.set(fromUserId, {
+                callId,
+                remoteUserId: to,
+            });
+
+            activeCalls.set(to, {
+                callId,
+                remoteUserId: fromUserId,
+            });
+
+            io.to(targetSocketId).emit("incomingCall", {
+                from: fromUserId,
+                conversationId,
+                offer,
+                callType,
+                callId,
+            });
+        } catch (error) {
+            console.error("CALL USER ERROR:", error);
+        }
+    });
     socket.on("callUser", async ({ to, conversationId, offer, callType, callId }) => {
         try {
             const fromUserId = socket.data.userId;
@@ -496,16 +546,21 @@ export function registerOneToOneHandlers(io: IOServer, socket: IOSocket): void {
         }
     });
 
-    socket.on("rejectCall", async ({ to, conversationId }) => {
+    socket.on("rejectCall", async ({ to, conversationId, callId }) => {
         try {
             const fromUserId = socket.data.userId;
             if (!fromUserId) return;
 
+            activeCalls.delete(fromUserId);
+            activeCalls.delete(to);
+
             const targetSocketId = await getOnlineUser(to);
+
             if (targetSocketId) {
                 io.to(targetSocketId).emit("callRejected", {
                     from: fromUserId,
                     conversationId,
+                    callId,
                 });
             }
         } catch (error) {
@@ -513,16 +568,21 @@ export function registerOneToOneHandlers(io: IOServer, socket: IOSocket): void {
         }
     });
 
-    socket.on("endCall", async ({ to, conversationId }) => {
+    socket.on("endCall", async ({ to, conversationId, callId }) => {
         try {
             const fromUserId = socket.data.userId;
             if (!fromUserId) return;
 
+            activeCalls.delete(fromUserId);
+            activeCalls.delete(to);
+
             const targetSocketId = await getOnlineUser(to);
+
             if (targetSocketId) {
                 io.to(targetSocketId).emit("callEnded", {
                     from: fromUserId,
                     conversationId,
+                    callId,
                 });
             }
         } catch (error) {
