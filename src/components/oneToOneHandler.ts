@@ -486,28 +486,7 @@ export function registerOneToOneHandlers(io: IOServer, socket: IOSocket): void {
             console.error("CALL USER ERROR:", error);
         }
     });
-    socket.on("callUser", async ({ to, conversationId, offer, callType, callId }) => {
-        try {
-            const fromUserId = socket.data.userId;
-            if (!fromUserId) return;
 
-            const targetSocketId = await getOnlineUser(to);
-
-            if (!targetSocketId) {
-                return socket.emit("callUserOffline", { to, conversationId });
-            }
-
-            io.to(targetSocketId).emit("incomingCall", {
-                from: fromUserId,
-                conversationId,
-                offer,
-                callType,
-                callId,
-            });
-        } catch (error) {
-            console.error("CALL USER ERROR:", error);
-        }
-    });
 
     socket.on("answerCall", async ({ to, conversationId, answer, callId }) => {
         try {
